@@ -141,7 +141,7 @@ import sherpa_onnx from "sherpa-onnx";
 // src/models.ts
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 var HOST_PRIMARY = "https://huggingface.co";
 var HOST_FALLBACK = "https://hf-mirror.com";
@@ -172,6 +172,8 @@ function redirectHostAllowed(finalUrl, allowCustomHost) {
     return false;
   }
 }
+var verifiedCache = /* @__PURE__ */ new Map();
+var cacheKey = (st) => `${st.size}:${st.ino}:${st.ctimeMs}`;
 async function sha256OfFile(path) {
   const hash = createHash("sha256");
   const { createReadStream } = await import("node:fs");
@@ -184,8 +186,17 @@ async function sha256OfFile(path) {
   return hash.digest("hex");
 }
 var MODEL_FETCH_HEADERS_TIMEOUT_MS = 6e4;
-async function fetchWithHeadersTimeout(url, init) {
-  const ac = new AbortController();
+var MODEL_BODY_IDLE_TIMEOUT_MS = 12e4;
+function makeIdleWatch(ac, ms) {
+  let t;
+  const stop = () => clearTimeout(t);
+  const kick = () => {
+    stop();
+    t = setTimeout(() => ac.abort(new Error("model download idle timeout")), ms);
+  };
+  return { kick, stop };
+}
+async function fetchWithHeadersTimeout(url, init, ac = new AbortController()) {
   const timer = setTimeout(() => ac.abort(new Error("model fetch headers timeout")), MODEL_FETCH_HEADERS_TIMEOUT_MS);
   try {
     return await fetch(url, { ...init, signal: ac.signal });
@@ -197,9 +208,14 @@ async function ensureModelFile(opts) {
   const { repoDir, spec, primaryHost, broadcast } = opts;
   const localPath = join(repoDir, spec.file);
   const partPath = `${localPath}.part`;
-  if ((await stat(localPath).catch(() => null))?.isFile()) {
+  const existing = await stat(localPath).catch(() => null);
+  if (existing?.isFile()) {
+    if (verifiedCache.get(localPath) === `${cacheKey(existing)}:${spec.sha256}`) return true;
     const ok = await sha256OfFile(localPath).catch(() => "") === spec.sha256;
-    if (ok) return true;
+    if (ok) {
+      verifiedCache.set(localPath, `${cacheKey(existing)}:${spec.sha256}`);
+      return true;
+    }
     await unlink(localPath).catch(() => void 0);
   }
   await mkdir(join(repoDir, spec.file.includes("/") ? spec.file.slice(0, spec.file.lastIndexOf("/")) : ""), {
@@ -208,6 +224,7 @@ async function ensureModelFile(opts) {
   const hosts = [...new Set([primaryHost, HOST_PRIMARY, HOST_FALLBACK].filter(Boolean))];
   let lastError = "no upstream reachable";
   for (const host of hosts) {
+    if (opts.signal?.aborted) break;
     try {
       const done = await downloadVerified({ ...opts, host, partPath, localPath });
       if (done) return true;
@@ -215,78 +232,125 @@ async function ensureModelFile(opts) {
       lastError = String(e);
     }
   }
+  if (opts.signal?.aborted) return false;
   if (lastError) console.warn(`[dsh-voice-mode] model download failed: ${spec.file}: ${lastError}`);
   broadcast("asr-error", { file: spec.file, reason: "checksum_or_download_failed" });
   return false;
 }
 async function downloadVerified(opts) {
   const { repo, spec, host, allowCustomHost, partPath, localPath, broadcast } = opts;
-  const url = `${host}/${repo}/resolve/main/${spec.file}`;
-  const partSt = await stat(partPath).catch(() => null);
-  const resumeFrom = partSt?.isFile() ? partSt.size : 0;
-  const headers = { "user-agent": "dsh-voice-mode" };
-  if (resumeFrom > 0) headers.range = `bytes=${resumeFrom}-`;
-  const res = await fetchWithHeadersTimeout(url, { headers, redirect: "follow" });
-  if (!redirectHostAllowed(res.url, allowCustomHost)) return false;
-  if (res.status === 416) {
-    if (await sha256OfFile(partPath).catch(() => "") === spec.sha256) {
-      await rename(partPath, localPath);
-      return true;
-    }
-    await unlink(partPath).catch(() => void 0);
-    return false;
+  const ac = new AbortController();
+  const onAbort = () => ac.abort(opts.signal?.reason);
+  if (opts.signal?.aborted) onAbort();
+  else opts.signal?.addEventListener("abort", onAbort, { once: true });
+  const idle = makeIdleWatch(ac, opts.idleTimeoutMs ?? MODEL_BODY_IDLE_TIMEOUT_MS);
+  try {
+    return await downloadBody();
+  } finally {
+    idle.stop();
+    opts.signal?.removeEventListener("abort", onAbort);
   }
-  if (res.status !== 200 && res.status !== 206) return false;
-  const resume = res.status === 206 ? resumeFrom : 0;
-  const total = Number(res.headers.get("content-length") ?? 0) + resume;
-  const src = res.body;
-  if (!src) return false;
-  const sink = createWriteStream(partPath, resume > 0 ? { flags: "a" } : {});
-  const reader = src.getReader();
-  let received = resume;
-  await new Promise((resolve, reject) => {
-    sink.on("error", (e) => reject(e));
-    sink.on("finish", () => resolve());
-    void (async () => {
-      try {
-        for (; ; ) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          received += value.byteLength;
-          if (!sink.write(value)) {
-            await new Promise((r) => sink.once("drain", r));
-          }
-          if (total > 0) {
-            broadcast("asr-progress", {
-              file: spec.file,
-              percent: Math.min(100, Math.round(received / total * 100))
-            });
-          }
-        }
-        sink.end();
-      } catch (e) {
-        sink.destroy(e);
-        reject(e);
+  async function downloadBody() {
+    const url = `${host}/${repo}/resolve/main/${spec.file}`;
+    const partSt = await stat(partPath).catch(() => null);
+    const resumeFrom = partSt?.isFile() ? partSt.size : 0;
+    const headers = { "user-agent": "dsh-voice-mode" };
+    if (resumeFrom > 0) headers.range = `bytes=${resumeFrom}-`;
+    const res = await fetchWithHeadersTimeout(url, { headers, redirect: "follow" }, ac);
+    idle.kick();
+    if (!redirectHostAllowed(res.url, allowCustomHost)) return false;
+    if (res.status === 416) {
+      if (await sha256OfFile(partPath).catch(() => "") === spec.sha256) {
+        await rename(partPath, localPath);
+        return true;
       }
-    })();
-  });
-  const actual = await sha256OfFile(partPath).catch(() => "");
-  if (actual !== spec.sha256) {
-    await unlink(partPath).catch(() => void 0);
-    return false;
+      await unlink(partPath).catch(() => void 0);
+      return false;
+    }
+    if (res.status !== 200 && res.status !== 206) return false;
+    const resume = res.status === 206 ? resumeFrom : 0;
+    const total = Number(res.headers.get("content-length") ?? 0) + resume;
+    const src = res.body;
+    if (!src) return false;
+    const sink = createWriteStream(partPath, resume > 0 ? { flags: "a" } : {});
+    const reader = src.getReader();
+    let received = resume;
+    await new Promise((resolve, reject) => {
+      sink.on("error", (e) => reject(e));
+      sink.on("finish", () => resolve());
+      void (async () => {
+        try {
+          for (; ; ) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            idle.kick();
+            received += value.byteLength;
+            if (!sink.write(value)) {
+              await new Promise((r) => sink.once("drain", r));
+              idle.kick();
+            }
+            if (total > 0) {
+              broadcast("asr-progress", {
+                file: spec.file,
+                percent: Math.min(100, Math.round(received / total * 100))
+              });
+            }
+          }
+          sink.end();
+        } catch (e) {
+          sink.destroy(e);
+          reject(e);
+        }
+      })();
+    });
+    idle.stop();
+    const actual = await sha256OfFile(partPath).catch(() => "");
+    if (actual !== spec.sha256) {
+      await unlink(partPath).catch(() => void 0);
+      return false;
+    }
+    await rename(partPath, localPath);
+    const st = await stat(localPath).catch(() => null);
+    if (st) verifiedCache.set(localPath, `${cacheKey(st)}:${spec.sha256}`);
+    return true;
   }
-  await rename(partPath, localPath);
-  return true;
 }
 function isSafeModelRel(rel, subdir) {
   if (!rel.startsWith(subdir + "/")) return false;
   if (rel.includes("\\") || rel.includes("\0")) return false;
   return !rel.split("/").some((seg) => seg === "" || seg === "." || seg === "..");
 }
+var TREE_MANIFEST = ".model-tree.json";
+async function countTreeFiles(dir) {
+  const ents = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
+  return ents.filter((e) => e.isFile() && !e.name.endsWith(".part") && e.name !== TREE_MANIFEST).length;
+}
+async function treeCompleteLocally(repoDir, subdir, sentinel, minFiles) {
+  const subRoot = join(repoDir, subdir);
+  const raw = await readFile(join(subRoot, TREE_MANIFEST), "utf8").catch(() => null);
+  if (raw !== null) {
+    try {
+      const m = JSON.parse(raw);
+      const files = m.files ?? [];
+      if (files.length > 0) {
+        for (const f of files) {
+          const st = await stat(join(repoDir, f.rel)).catch(() => null);
+          if (!st?.isFile() || st.size !== f.size) return false;
+        }
+        return true;
+      }
+    } catch {
+    }
+  }
+  if (!sentinel || !minFiles) return false;
+  if (!(await stat(join(repoDir, sentinel)).catch(() => null))?.isFile()) return false;
+  return await countTreeFiles(subRoot) >= minFiles;
+}
 async function ensureModelTree(opts) {
   const { repo, repoDir, subdir, primaryHost, allowCustomHost, broadcast } = opts;
   const hosts = [...new Set([primaryHost, HOST_PRIMARY, HOST_FALLBACK].filter(Boolean))];
   const subRoot = join(repoDir, subdir);
+  if (await treeCompleteLocally(repoDir, subdir, opts.sentinel, opts.minFiles)) return true;
   await mkdir(subRoot, { recursive: true }).catch(() => void 0);
   let tree = [];
   for (const host of hosts) {
@@ -322,37 +386,53 @@ async function ensureModelTree(opts) {
       for (const host of hosts) {
         try {
           const url = host + "/" + repo + "/resolve/main/" + encodeURIComponent(rel);
-          const res = await fetchWithHeadersTimeout(url, { headers: { "user-agent": "dsh-voice-mode" }, redirect: "follow" });
-          if (!redirectHostAllowed(res.url, allowCustomHost)) continue;
-          if (res.status !== 200) continue;
-          const reader = res.body?.getReader();
-          if (!reader) continue;
-          const sink = createWriteStream(partPath);
-          let size = 0;
-          await new Promise((resolve, reject) => {
-            sink.on("error", reject);
-            sink.on("finish", resolve);
-            void (async () => {
-              try {
-                for (; ; ) {
-                  const r = await reader.read();
-                  if (r.done) break;
-                  size += r.value.byteLength;
-                  if (!sink.write(r.value)) await new Promise((r2) => sink.once("drain", r2));
+          const ac = new AbortController();
+          const onAbort = () => ac.abort(opts.signal?.reason);
+          if (opts.signal?.aborted) onAbort();
+          else opts.signal?.addEventListener("abort", onAbort, { once: true });
+          const idle = makeIdleWatch(ac, opts.idleTimeoutMs ?? MODEL_BODY_IDLE_TIMEOUT_MS);
+          try {
+            const res = await fetchWithHeadersTimeout(url, { headers: { "user-agent": "dsh-voice-mode" }, redirect: "follow" }, ac);
+            if (!redirectHostAllowed(res.url, allowCustomHost)) continue;
+            if (res.status !== 200) continue;
+            idle.kick();
+            const reader = res.body?.getReader();
+            if (!reader) continue;
+            const sink = createWriteStream(partPath);
+            let size = 0;
+            await new Promise((resolve, reject) => {
+              sink.on("error", reject);
+              sink.on("finish", resolve);
+              void (async () => {
+                try {
+                  for (; ; ) {
+                    const r = await reader.read();
+                    if (r.done) break;
+                    idle.kick();
+                    size += r.value.byteLength;
+                    if (!sink.write(r.value)) {
+                      await new Promise((r2) => sink.once("drain", r2));
+                      idle.kick();
+                    }
+                  }
+                  sink.end();
+                } catch (e) {
+                  sink.destroy(e);
+                  reject(e);
                 }
-                sink.end();
-              } catch (e) {
-                sink.destroy(e);
-                reject(e);
-              }
-            })();
-          });
-          if (size > 0) {
-            await rename(partPath, localPath);
-            ok = true;
-            break;
+              })();
+            });
+            if (size > 0) {
+              await rename(partPath, localPath);
+              ok = true;
+              break;
+            }
+          } finally {
+            idle.stop();
+            opts.signal?.removeEventListener("abort", onAbort);
           }
         } catch {
+          if (opts.signal?.aborted) break;
         }
       }
       if (ok) {
@@ -364,6 +444,16 @@ async function ensureModelTree(opts) {
     }
   };
   await Promise.all(Array.from({ length: 8 }, () => worker()));
+  if (allOk) {
+    const files = [];
+    for (const rel of tree) {
+      const st = await stat(join(repoDir, rel)).catch(() => null);
+      if (st?.isFile()) files.push({ rel, size: st.size });
+    }
+    if (files.length === tree.length) {
+      await writeFile(join(subRoot, TREE_MANIFEST), JSON.stringify({ files })).catch(() => void 0);
+    }
+  }
   return allOk;
 }
 
@@ -446,6 +536,7 @@ function createAsrRuntime(options) {
         return true;
       })().finally(() => {
         modelsLoading = null;
+        lastProgress = null;
       });
     }
     return modelsLoading;
@@ -489,6 +580,7 @@ function createAsrRuntime(options) {
         return join2(vadDir, VAD_FILES[0].file);
       })().finally(() => {
         vadLoading = null;
+        lastProgress = null;
       });
     }
     return vadLoading;
@@ -544,6 +636,7 @@ function createAsrRuntime(options) {
         return join2(senseDir, SENSE_FILES[0].file);
       })().finally(() => {
         senseLoading = null;
+        lastProgress = null;
       });
     }
     return senseLoading;
@@ -1993,6 +2086,7 @@ function kokoroSpec(model) {
     toSid: kokoroVoiceToSid
   };
 }
+var CALL_TIMEOUT_MS = 12e4;
 function createSherpaLocalEngine(options) {
   const { cacheDir, modelHost, allowCustomHost, broadcast } = options;
   let downloadProgress = null;
@@ -2013,13 +2107,15 @@ function createSherpaLocalEngine(options) {
   let child = null;
   let childInit = false;
   let closed = false;
+  const dlAbort = new AbortController();
+  let starting = false;
   const respawnChild = async () => {
     if (child) {
       child.kill();
       child = null;
     }
     childInit = false;
-    ready = null;
+    if (!starting) ready = null;
   };
   let voice = spec.defaultVoice;
   let speed = 1;
@@ -2029,23 +2125,36 @@ function createSherpaLocalEngine(options) {
   let engineErrorCode;
   let nextId = 1;
   const pending = /* @__PURE__ */ new Map();
-  const call = (msg) => new Promise((resolve, reject) => {
+  const call = (msg, timeoutMs = CALL_TIMEOUT_MS) => new Promise((resolve, reject) => {
     if (!child) {
       reject(new Error("tts child not running"));
       return;
     }
     const id = nextId++;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (!pending.delete(id)) return;
+      reject(new Error(`tts child call timeout: ${String(msg.type)}`));
+      if (msg.type !== "close") void respawnChild();
+    }, timeoutMs);
+    pending.set(id, {
+      owner: child,
+      resolve: (r) => (clearTimeout(timer), resolve(r)),
+      reject: (e) => (clearTimeout(timer), reject(e))
+    });
     child.send({ id, ...msg });
   });
-  const rejectAll = (e) => {
-    for (const p of pending.values()) p.reject(e);
-    pending.clear();
+  const rejectAll = (e, owner) => {
+    for (const [id, p] of pending) {
+      if (owner && p.owner !== owner) continue;
+      pending.delete(id);
+      p.reject(e);
+    }
   };
   const ensureReady = () => {
     if (ready && child) return ready;
     if (!ready) {
       ready = (async () => {
+        starting = true;
         engineLoading = true;
         engineError = void 0;
         engineErrorCode = void 0;
@@ -2060,7 +2169,8 @@ function createSherpaLocalEngine(options) {
                 spec: f,
                 primaryHost: modelHost(),
                 allowCustomHost,
-                broadcast: trackedBroadcast
+                broadcast: trackedBroadcast,
+                signal: dlAbort.signal
               });
               if (closed) return;
               if (!ok) throw new Error("local TTS model download/verify failed: " + f.file);
@@ -2072,7 +2182,12 @@ function createSherpaLocalEngine(options) {
                 subdir: "espeak-ng-data",
                 primaryHost: modelHost(),
                 allowCustomHost,
-                broadcast: trackedBroadcast
+                broadcast: trackedBroadcast,
+                signal: dlAbort.signal,
+                // I-3：本地完整则 0 网络；无清单的旧缓存以哨兵 + 文件数兜底。
+                // 取上游整树文件数（HF API 实测 int8/fp32 均 355）：低于它一律联网补全，半成品树不会被误判完整。
+                sentinel: "espeak-ng-data/phontab",
+                minFiles: 355
               });
               if (closed) return;
               if (!treeOk) throw new Error("local TTS model download failed: espeak-ng-data");
@@ -2105,18 +2220,18 @@ function createSherpaLocalEngine(options) {
                 else p.reject(new Error(m.error ?? "tts child error"));
               });
               child.on("error", (e) => {
-                rejectAll(e instanceof Error ? e : new Error(String(e)));
+                rejectAll(e instanceof Error ? e : new Error(String(e)), me);
                 if (child !== me) return;
                 child = null;
                 childInit = false;
-                ready = null;
+                if (!starting) ready = null;
               });
               child.on("exit", (code) => {
-                rejectAll(new Error(`tts child exited with code ${code}`));
+                rejectAll(new Error(`tts child exited with code ${code}`), me);
                 if (child !== me) return;
                 child = null;
                 childInit = false;
-                ready = null;
+                if (!starting) ready = null;
               });
             }
             if (!childInit) {
@@ -2133,6 +2248,8 @@ function createSherpaLocalEngine(options) {
           throw e;
         } finally {
           engineLoading = false;
+          starting = false;
+          downloadProgress = null;
         }
       })().then(
         (v) => {
@@ -2193,7 +2310,7 @@ function createSherpaLocalEngine(options) {
       const spd = typeof opts.rate === "number" && Number.isFinite(opts.rate) ? Math.min(2, Math.max(0.5, opts.rate)) : speed;
       const segments = parseEmotionTags(text);
       if (segments.length === 0) {
-        return pcmToWav(Buffer.alloc(0), 16e3);
+        return Buffer.alloc(0);
       }
       const chunks = [];
       let resolvedSampleRate = 0;
@@ -2223,7 +2340,7 @@ function createSherpaLocalEngine(options) {
         }
       }
       if (chunks.length === 0) {
-        return pcmToWav(Buffer.alloc(0), resolvedSampleRate || 16e3);
+        return Buffer.alloc(0);
       }
       const total = chunks.reduce((acc, c) => acc + c.length, 0);
       const merged = new Float32Array(total);
@@ -2236,10 +2353,11 @@ function createSherpaLocalEngine(options) {
     },
     async close() {
       closed = true;
+      dlAbort.abort();
       const c = child;
       if (c) {
         try {
-          await call({ type: "close" });
+          await call({ type: "close" }, 100);
         } catch {
         }
         try {
@@ -2596,7 +2714,26 @@ var en = {
 function correctionSystem(lang) {
   return lang === "en" ? "You are a speech-recognition corrector. The user text comes from ASR and may contain homophone errors, typos, or missing/wrong punctuation. Make only minimal fixes: correct typos/homophones and fix punctuation, preserving the original meaning and colloquial style. Do not rewrite sentences, do not add content, do not answer questions, and do not alter numbers or proper nouns. Output only the corrected text, with no explanation. If the input has no obvious errors, return it unchanged." : "\u4F60\u662F\u4E2D\u6587\u8BED\u97F3\u8BC6\u522B\u7EA0\u9519\u5668\u3002\u7528\u6237\u7684\u8BDD\u6765\u81EA\u8BED\u97F3\u8BC6\u522B\uFF08ASR\uFF09\uFF0C\u53EF\u80FD\u6709\u540C\u97F3\u5B57\u3001\u9519\u522B\u5B57\u3001\u6807\u70B9\u7F3A\u5931\u6216\u9519\u8BEF\u3002\u8BF7\u53EA\u505A\u6700\u5C0F\u4FEE\u6B63\uFF1A\u6539\u9519\u522B\u5B57/\u540C\u97F3\u5B57\u3001\u8865\u6807\u70B9\uFF0C\u4FDD\u6301\u539F\u610F\u4E0E\u53E3\u8BED\u98CE\u683C\uFF1B\u4E0D\u8981\u6539\u5199\u53E5\u5B50\u3001\u4E0D\u8981\u8865\u5145\u5185\u5BB9\u3001\u4E0D\u8981\u56DE\u7B54\u95EE\u9898\u3001\u4E0D\u8981\u6539\u53D8\u6570\u5B57\u548C\u4E13\u4E1A\u672F\u8BED\u3002\u53EA\u8F93\u51FA\u4FEE\u6B63\u540E\u7684\u6587\u672C\uFF0C\u4E0D\u8981\u4EFB\u4F55\u89E3\u91CA\u3002\u5982\u679C\u539F\u6587\u6CA1\u6709\u660E\u663E\u9519\u8BEF\uFF0C\u539F\u6837\u8FD4\u56DE\u3002";
 }
-var CORRECTION_PREAMBLE_RE = /^(?:以下是|这是)?(?:修正|纠正|更正|纠错)|^(?:here(?:'s| is) (?:the |an |a )?)?(?:corrected|correction)\b/i;
+var CORRECTION_PREAMBLE_RE = /^(?:以下是|这是|已|文本)?(?:修正|纠正|更正|纠错)|^(?:here(?:'s| is) (?:the |an |a )?|i have |text after )?(?:corrected|correction)\b/i;
+var CORRECTION_MIN_SIMILARITY = 0.45;
+var SIMILARITY_MAX_CHARS = 1500;
+function normalizedSimilarity(a, b) {
+  const norm = (s) => Array.from(s.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ""));
+  const x = norm(a);
+  const y = norm(b);
+  const n = Math.max(x.length, y.length);
+  if (n === 0) return 1;
+  if (n > SIMILARITY_MAX_CHARS) return 1;
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return 1 - prev[y.length] / n;
+}
 var CORRECTION_FILLER_WORDS = "\u5F53\u7136\u53EF\u4EE5|\u5F53\u7136|\u597D\u5427|\u597D\u7684?|\u884C\u5427|\u884C|\u662F\u7684|\u55EF|\u6536\u5230|\u660E\u767D\u4E86|\u77E5\u9053\u4E86|Thank you|Of course|Got it|OK|Okay|Sure|Certainly|Alright|Understood|Hello|Hi|Yes|Thanks";
 var CORRECTION_FILLER_PREFIX_RE = new RegExp(
   "^(?:(?:" + CORRECTION_FILLER_WORDS + ")(?:\\s*[,\uFF0C\u3001:\uFF1A.\u3002!\uFF01?\uFF1F)\uFF09]|\\s))+",
@@ -2629,6 +2766,7 @@ async function correctText(ctx, text, lang) {
     }
     const corrected = out.trim();
     if (corrected.length > Math.max(trimmed.length * 3, trimmed.length + 24)) return text;
+    if (normalizedSimilarity(trimmed, corrected) < CORRECTION_MIN_SIMILARITY) return text;
     if (CORRECTION_PREAMBLE_RE.test(corrected)) return text;
     let noFiller = corrected;
     for (; ; ) {
@@ -3106,6 +3244,15 @@ function apply(ctx, config) {
   };
   const sseClients = /* @__PURE__ */ new Set();
   const latestConnByTab = /* @__PURE__ */ new Map();
+  const SSE_MAX_BUFFERED = 4 * 1024 * 1024;
+  ctx.effect(() => () => {
+    if (ownerYieldTimer) clearTimeout(ownerYieldTimer);
+    ownerYieldTimer = null;
+    const live = [...sseClients];
+    sseClients.clear();
+    latestConnByTab.clear();
+    for (const c of live) c.end();
+  });
   const broadcast = (event, payload) => {
     for (const c of sseClients) {
       try {
@@ -3546,7 +3693,7 @@ function apply(ctx, config) {
             respondJson2(res, 400, { code: "bad_request", error: "invalid on" });
             return;
           }
-          if (!limiter.hit(`toggle:${sessionId}`, 2, 2e3)) {
+          if (on === true && !limiter.hit(`toggle:${sessionId}`, 2, 2e3)) {
             respondJson2(res, 429, { code: "rate_limited", error: "rate limited" });
             return;
           }
@@ -3964,6 +4111,10 @@ function apply(ctx, config) {
 data: ${JSON.stringify(payload)}
 
 `);
+          if (res.writableLength > SSE_MAX_BUFFERED) {
+            console.warn(`[dsh-voice-mode] SSE client too slow (buffered ${res.writableLength}B); dropping connection`);
+            res.destroy();
+          }
         };
         const end = () => {
           try {

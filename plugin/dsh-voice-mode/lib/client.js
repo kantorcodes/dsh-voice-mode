@@ -514,6 +514,7 @@ function createAsrEngine(config, sessionId) {
   let preRollStartWall = 0;
   let preRollSeedWall = null;
   let wasPlaying = false;
+  let rawPlayingSinceWall = 0;
   let gateQueryScope = false;
   let partialFailStreak = 0;
   let detectFailStreak = 0;
@@ -623,6 +624,10 @@ function createAsrEngine(config, sessionId) {
           }, 5e3);
         });
         res = retry;
+        if (res.status === 202) {
+          if (epoch === segmentEpoch && active && state !== "wake") setState("loading-model");
+          return;
+        }
       }
       if (res.status === 403 && config.onSessionExpired) {
         const recovered = await config.onSessionExpired();
@@ -709,7 +714,10 @@ function createAsrEngine(config, sessionId) {
       if (!res.ok) return;
       const out = await res.json();
       if (epoch !== segmentEpoch || gen !== detectGeneration) return;
-      if (out.isSpeech === true && preRollSeedWall === null) preRollSeedWall = reqBodyStartWall - 250;
+      const rawNow = config.isPlayingRaw ? config.isPlayingRaw() : config.isPlaying?.() ?? false;
+      if (out.isSpeech === true && preRollSeedWall === null && rawNow && reqBodyStartWall >= rawPlayingSinceWall) {
+        preRollSeedWall = reqBodyStartWall - 250;
+      }
       if (out.isSpeech !== void 0) deliverIsSpeech(out.isSpeech);
       detectFailStreak = 0;
       detectSent += samples.length;
@@ -962,6 +970,7 @@ function createAsrEngine(config, sessionId) {
       }
     }
     const playingNow = config.isPlaying?.() ?? false;
+    const rawNow = config.isPlayingRaw ? config.isPlayingRaw() : playingNow;
     const gateRatio = Math.pow(10, (config.echoGateDb ?? 6) / 20);
     const peakDecay = Math.pow(0.9, durationMs / 64);
     const floorAlpha = 1 - Math.pow(0.98, durationMs / 64);
@@ -994,7 +1003,7 @@ function createAsrEngine(config, sessionId) {
     }
     if (playingNow && !holdActive && config.mode !== "hold") {
       detectChunks.push(data);
-      if (salvageEnabled) {
+      if (salvageEnabled && rawNow) {
         if (preRoll.length === 0) preRollStartWall = Date.now();
         preRoll.push(data);
         preRollMs += durationMs;
@@ -1006,14 +1015,13 @@ function createAsrEngine(config, sessionId) {
         }
       }
     }
-    if (playingNow && !wasPlaying) {
-      wasPlaying = true;
+    if (rawNow !== wasPlaying) {
+      wasPlaying = rawNow;
+      if (rawNow) rawPlayingSinceWall = Date.now() - durationMs;
       preRollSeedWall = null;
       preRoll = [];
       preRollMs = 0;
       preRollStartWall = 0;
-    } else if (!playingNow && wasPlaying) {
-      wasPlaying = false;
     }
     if (holdActive) {
       if (!speechActive) {
@@ -1068,6 +1076,8 @@ function createAsrEngine(config, sessionId) {
         segment.push(data);
         if (segmentMs > MAX_SEGMENT_MS) finalizeSegment();
       }
+    } else if (speechActive && config.isPlaying?.()) {
+      finalizeSegment(true);
     } else if (speechActive) {
       if (utteranceEndAt === null) {
         utteranceEndAt = Date.now();
@@ -1122,6 +1132,7 @@ function createAsrEngine(config, sessionId) {
     } catch {
     }
     if (stream === myStream) stream = null;
+    if (!myCtx) return;
     try {
       await myCtx.close();
     } catch {
@@ -1129,6 +1140,15 @@ function createAsrEngine(config, sessionId) {
     if (audioCtx === myCtx) audioCtx = null;
   };
   const startRecorder = async () => {
+    const owned = {};
+    try {
+      await startRecorderInner(owned);
+    } catch (error) {
+      if (owned.stream) await abandonStart(owned.stream, owned.ctx ?? null);
+      throw error;
+    }
+  };
+  const startRecorderInner = async (owned) => {
     const mySeq = startSeq;
     const myStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -1142,6 +1162,7 @@ function createAsrEngine(config, sessionId) {
         autoGainControl: false
       }
     });
+    owned.stream = myStream;
     if (stopRequested || mySeq !== startSeq) {
       myStream.getTracks().forEach((t3) => t3.stop());
       return;
@@ -1157,6 +1178,7 @@ function createAsrEngine(config, sessionId) {
     config.onAecState?.(aecOn);
     const AC = window.AudioContext ?? window.webkitAudioContext;
     const myCtx = new AC({ sampleRate: SAMPLE_RATE2 });
+    owned.ctx = myCtx;
     audioCtx = myCtx;
     try {
       await audioCtx.resume?.();
@@ -3813,7 +3835,8 @@ function VoiceSettingsCard({ scope, defaultOpen = false }) {
 var SETTINGS_URL = "/voice-mode/settings";
 var RETRY_BASE_MS = 500;
 var RETRY_MAX_MS = 1e4;
-function createHttpScope(origin = location.origin, fetchImpl = fetch) {
+var REQUEST_TIMEOUT_MS = 8e3;
+function createHttpScope(origin = location.origin, fetchImpl = fetch, timeoutMs = REQUEST_TIMEOUT_MS) {
   let snap = { status: "loading", value: {} };
   const subs = /* @__PURE__ */ new Set();
   let inFlight = false;
@@ -3849,7 +3872,7 @@ function createHttpScope(origin = location.origin, fetchImpl = fetch) {
     clearRetry();
     const myGen = writeGen;
     try {
-      const res = await fetchImpl(origin + SETTINGS_URL);
+      const res = await fetchImpl(origin + SETTINGS_URL, { signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       retryDelay = 0;
@@ -3903,7 +3926,8 @@ function createHttpScope(origin = location.origin, fetchImpl = fetch) {
         const res = await fetchImpl(origin + SETTINGS_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ [field]: value })
+          body: JSON.stringify({ [field]: value }),
+          signal: AbortSignal.timeout(timeoutMs)
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -3960,7 +3984,7 @@ function telemetryDeltas(tel) {
   }
   return out;
 }
-var BUILD_TAG = "477531f";
+var BUILD_TAG = "93108c4";
 var TELEMETRY_FLAG = "dsh-voice-mode.telemetry";
 var telemetryEnabled = typeof localStorage !== "undefined" && localStorage.getItem(TELEMETRY_FLAG) === "1";
 console.log("[dsh-voice] build=" + BUILD_TAG);
@@ -3994,6 +4018,7 @@ var SAMPLE_RATE_16K = 16e3;
 var ECHO_DELAY_MS = 0;
 var AUTO_SEND_EXTRA_MS = 1200;
 var ECHO_TAIL_MS = 400;
+var TOGGLE_TIMEOUT_MS = 8e3;
 var HOLD_CLEAR_FRAMES = 2;
 var WAVE_BARS = 14;
 var BASE_PATH2 = "/voice-mode";
@@ -4198,6 +4223,8 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
   const pending = [];
   const fallbackAudio = new Audio();
   let fallback = false;
+  let decodeFailStreak = 0;
+  let fallbackBusy = false;
   let ctx = null;
   let duckGain = null;
   let analyser = null;
@@ -4233,19 +4260,23 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
   const playFallback = () => {
     const frame = pending.shift() ?? null;
     if (!frame) {
+      fallbackBusy = false;
       setUi({ playing: false, playingCaption: null });
       return;
     }
+    fallbackBusy = true;
     const url = URL.createObjectURL(new Blob([frame.audio], { type: frame.mime === "audio/wav" ? "audio/wav" : "audio/mpeg" }));
     fallbackAudio.src = url;
-    fallbackAudio.onended = () => {
+    const next = () => {
       URL.revokeObjectURL(url);
-      playFallback();
+      fallbackBusy = false;
+      if (!fallback && ctx) {
+        if (pending.length > 0) drainPending();
+        else setUi({ playing: false, playingCaption: null });
+      } else playFallback();
     };
-    fallbackAudio.onerror = () => {
-      URL.revokeObjectURL(url);
-      playFallback();
-    };
+    fallbackAudio.onended = next;
+    fallbackAudio.onerror = next;
     fallbackAudio.onplaying = () => {
       try {
         onPlayed?.();
@@ -4266,13 +4297,14 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
     void fallbackAudio.play().catch(() => playFallback());
   };
   const drainPending = () => {
-    if (decoding || !ctx || !duckGain || pending.length === 0) return;
+    if (decoding || fallbackBusy || !ctx || !duckGain || pending.length === 0) return;
     decoding = true;
     void (async () => {
       try {
         while (pending.length > 0) {
           const frame = pending[0];
           const buf = await ctx.decodeAudioData(frame.audio.buffer.slice(0));
+          decodeFailStreak = 0;
           if (pending.length === 0 || pending[0] !== frame) return;
           pending.shift();
           const t0 = ctx.currentTime;
@@ -4316,7 +4348,7 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
         }
         activeSrcs.clear();
         captionQueue.length = 0;
-        fallback = true;
+        if (++decodeFailStreak >= 2) fallback = true;
         playFallback();
       } finally {
         decoding = false;
@@ -4336,6 +4368,7 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
     },
     skip() {
       pending.length = 0;
+      fallbackBusy = false;
       nextEndAt = 0;
       fallbackAudio.pause();
       fallbackAudio.onended = null;
@@ -4351,6 +4384,10 @@ function createAudioEngine(setUi, onPlayed, onPlaybackRef, onAllPlayed) {
       setUi({ playing: false, playingCaption: null });
     },
     warm,
+    resetFallback() {
+      fallback = false;
+      decodeFailStreak = 0;
+    },
     unduck() {
       if (!ctx || !duckGain) return;
       const now = ctx.currentTime;
@@ -4619,6 +4656,7 @@ function createVoiceBus(basePath = BASE_PATH2, ctx) {
     if (source) return;
     source = new EventSource(`${location.origin}${basePath}/stream?tabId=${encodeURIComponent(TAB_ID)}`);
     source.addEventListener("open", () => {
+      engine.resetFallback();
       rejectSeqUpTo.clear();
       lastFinalSeq.clear();
       curSentenceId = null;
@@ -4936,11 +4974,14 @@ function createVoiceBus(basePath = BASE_PATH2, ctx) {
       return playingEndAt + ECHO_TAIL_MS + refDelaySamples / SAMPLE_RATE_16K * 1e3;
     },
     async enter(sessionId) {
+      engine.resetFallback();
       try {
         const res = await fetch(`${location.origin}${basePath}/toggle`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sessionId, on: true, tabId: TAB_ID, lang: activeLocale() })
+          body: JSON.stringify({ sessionId, on: true, tabId: TAB_ID, lang: activeLocale() }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS)
+          // I-7：宿主无响应不再让按钮永久 pending
         });
         const out = await res.json();
         activeSessionId = out.active === sessionId ? sessionId : null;
@@ -4954,10 +4995,18 @@ function createVoiceBus(basePath = BASE_PATH2, ctx) {
           error: out.active === sessionId ? void 0 : t("enterFail")
         };
       } catch {
+        void fetch(`${location.origin}${basePath}/toggle`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId, on: false, tabId: TAB_ID }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS)
+        }).catch(() => {
+        });
         return { ok: false, error: t("enterFail") };
       }
     },
     async exit(sessionId, keepAudio) {
+      engine.resetFallback();
       resetTelemetry();
       ui.turn = "idle";
       if (!keepAudio) {
@@ -4967,7 +5016,9 @@ function createVoiceBus(basePath = BASE_PATH2, ctx) {
         const res = await fetch(`${location.origin}${basePath}/toggle`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sessionId, on: false, tabId: TAB_ID })
+          body: JSON.stringify({ sessionId, on: false, tabId: TAB_ID }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS)
+          // I-7
         });
         await res.json();
         activeSessionId = null;
@@ -5214,6 +5265,7 @@ function MicButton({
   const sidRef = (0, import_react3.useRef)(sessionId);
   const engineRef = (0, import_react3.useRef)(null);
   const micReadyRef = (0, import_react3.useRef)(false);
+  const enterEpochRef = (0, import_react3.useRef)(0);
   const actionsRef = (0, import_react3.useRef)(inputActions);
   const submitTimerRef = (0, import_react3.useRef)(null);
   const autoSendTimerRef = (0, import_react3.useRef)(null);
@@ -5282,7 +5334,7 @@ function MicButton({
   };
   const fetchConfig = async () => {
     try {
-      const res = await fetch(`${location.origin}${BASE_PATH2}/config`);
+      const res = await fetch(`${location.origin}${BASE_PATH2}/config`, { signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS) });
       if (!res.ok) return bootNow();
       const c = await res.json();
       const cur = bootNow();
@@ -5642,6 +5694,10 @@ function MicButton({
     const sid = sidRef.current;
     if (sid) await bus.exit(sid, reason === "typing");
   };
+  const cancelPending = () => {
+    enterEpochRef.current++;
+    void exitModeRef.current("manual");
+  };
   const enterMode = async () => {
     const sid = sidRef.current;
     if (!sid || localRef.current !== "off") return;
@@ -5649,10 +5705,11 @@ function MicButton({
     isSpeechFalseRun = 0;
     micReadyRef.current = false;
     setLocalMode("pending");
+    const myEnter = ++enterEpochRef.current;
     try {
       const entered = await bus.enter(sid);
-      if (!mountedRef.current) {
-        if (entered.ok) void bus.exit(sid);
+      if (!mountedRef.current || enterEpochRef.current !== myEnter) {
+        if (entered.ok && localRef.current === "off") void bus.exit(sid);
         return;
       }
       if (!entered.ok) {
@@ -5665,6 +5722,10 @@ function MicButton({
         return;
       }
       const cfg = await fetchConfig();
+      if (enterEpochRef.current !== myEnter) {
+        if (localRef.current === "off") void bus.exit(sid);
+        return;
+      }
       const basePath = cfg.basePath;
       const silenceMs = cfg.silenceMs;
       const interruptLevel = cfg.interruptLevel;
@@ -5727,6 +5788,8 @@ function MicButton({
           echo: bus.echoForAsr(),
           // 回声尾音宽限：playing 或尾音窗口内均视为朗读中，防句播完瞬间的残响漏入 ASR。
           isPlaying: () => bus.ui.playing || Date.now() < bus.playingTailUntil(),
+          // I-18：裸播放态（不含尾窗），预录环/抢救种子以它划句边界。
+          isPlayingRaw: () => bus.ui.playing,
           // 打断根治阶段二：服务端 Silero VAD 帧级检测下行 → 驱动打断（替代 RMS 能量快
           // 路径）。连续 confirmFrames 次 true（墙钟节拍 100ms/拍，三档确认约 0.3/0.2/0.1s）
           // 判真实人声前沿；仅 AI 朗读中（bus.ui.playing）触发 hardBreak，
@@ -5952,10 +6015,10 @@ function MicButton({
         return;
       }
       await engine.start();
-      if (!mountedRef.current) {
-        engineRef.current = null;
+      if (!mountedRef.current || enterEpochRef.current !== myEnter) {
+        if (engineRef.current === engine) engineRef.current = null;
         await engine.stop();
-        void bus.exit(sid);
+        if (!mountedRef.current || localRef.current === "off") void bus.exit(sid);
         return;
       }
       if (bus.activeSessionId !== sid) {
@@ -5982,6 +6045,8 @@ function MicButton({
         }
       }
     } catch (e) {
+      if (enterEpochRef.current !== myEnter) return;
+      engineRef.current = null;
       pendingHoldRef.current = false;
       pendingHoldReleaseRef.current = false;
       clearHoldExit();
@@ -6005,6 +6070,7 @@ function MicButton({
     if (!takeToggleSlot(toggleHistRef.current, Date.now())) return;
     if (localRef.current === "on") void exitModeRef.current("manual");
     else if (localRef.current === "off") void enterMode();
+    else if (localRef.current === "pending") cancelPending();
   };
   const toggleRef = (0, import_react3.useRef)(toggle);
   toggleRef.current = toggle;
@@ -6464,6 +6530,8 @@ function MicButton({
       if (localRef.current === "on") {
         engineRef.current?.endHeld(true);
         void exitModeRef.current("manual");
+      } else if (localRef.current === "pending") {
+        cancelPending();
       } else {
         void enterMode();
       }
@@ -6705,8 +6773,6 @@ function VoiceStatusBar({ bus, sessionId }) {
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
     "div",
     {
-      role: "status",
-      "aria-live": "polite",
       style: {
         display: "flex",
         flexDirection: "column",
@@ -6725,6 +6791,7 @@ function VoiceStatusBar({ bus, sessionId }) {
           botBars.some((v) => v > 0) && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
+              "aria-hidden": "true",
               title: t("botLevelsHint"),
               style: {
                 display: "inline-flex",
@@ -6747,7 +6814,7 @@ function VoiceStatusBar({ bus, sessionId }) {
               ))
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { display: "inline-flex", alignItems: "flex-end", gap: 2, height: 14, flexShrink: 0 }, children: bars.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { "aria-hidden": "true", style: { display: "inline-flex", alignItems: "flex-end", gap: 2, height: 14, flexShrink: 0 }, children: bars.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
               className: "dshvm-bar",
@@ -6759,7 +6826,32 @@ function VoiceStatusBar({ bus, sessionId }) {
             },
             i
           )) }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexGrow: 1 }, children: b.ui.error ? b.ui.error : b.ui.sseDown ? t("sseReconnect") : b.ui.notice ? b.ui.notice : b.ui.idleWarn ? t("idleWarn30s") : b.ui.state === "loading-model" || b.ui.model ? b.ui.model ? `${t("loadingModel")} ${b.ui.model.file} ${b.ui.model.percent}%` : stateText : b.ui.playing || b.ui.turn === "agent-speaking" ? stateText : b.ui.state === "wake" && b.ui.partial ? `${stateText} \xB7 ${b.ui.partial}` : b.ui.partial ? b.ui.partial : b.ui.ttsNotice ? b.ui.ttsNotice : stateText }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+            "span",
+            {
+              "data-dshvm": "status-text",
+              role: "status",
+              "aria-live": "polite",
+              "aria-atomic": "true",
+              style: {
+                position: "absolute",
+                width: 1,
+                height: 1,
+                overflow: "hidden",
+                clip: "rect(0 0 0 0)",
+                whiteSpace: "nowrap"
+              },
+              children: b.ui.error || (b.ui.sseDown ? t("sseReconnect") : "") || b.ui.notice || (b.ui.idleWarn ? t("idleWarn30s") : "") || (b.ui.state === "transcribing" ? t("recognizing") : stateText)
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+            "span",
+            {
+              "aria-hidden": "true",
+              style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexGrow: 1 },
+              children: b.ui.error ? b.ui.error : b.ui.sseDown ? t("sseReconnect") : b.ui.notice ? b.ui.notice : b.ui.idleWarn ? t("idleWarn30s") : b.ui.state === "loading-model" || b.ui.model ? b.ui.model ? `${t("loadingModel")} ${b.ui.model.file} ${b.ui.model.percent}%` : stateText : b.ui.playing || b.ui.turn === "agent-speaking" ? stateText : b.ui.state === "wake" && b.ui.partial ? `${stateText} \xB7 ${b.ui.partial}` : b.ui.partial ? b.ui.partial : b.ui.ttsNotice ? b.ui.ttsNotice : stateText
+            }
+          ),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "button",
             {
@@ -6783,6 +6875,7 @@ function VoiceStatusBar({ bus, sessionId }) {
           b.ui.isSpeech === true && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
+              "aria-hidden": "true",
               title: t("vadDetected"),
               style: {
                 flexShrink: 0,
@@ -6800,6 +6893,7 @@ function VoiceStatusBar({ bus, sessionId }) {
           b.ui.ttsNotice && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
+              "aria-hidden": "true",
               title: b.ui.ttsNotice,
               style: {
                 flexShrink: 0,
@@ -6821,6 +6915,7 @@ function VoiceStatusBar({ bus, sessionId }) {
           elapsedSec > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
             "span",
             {
+              "aria-hidden": "true",
               title: t("elapsedHint"),
               style: {
                 flexShrink: 0,
@@ -6842,6 +6937,7 @@ function VoiceStatusBar({ bus, sessionId }) {
           b.ui.aecOff === true && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
+              "aria-hidden": "true",
               title: b.ui.bargeInDetectFallback ? t("bargeInDetectFallback") : t("aecOffHint"),
               style: {
                 flexShrink: 0,
@@ -6877,6 +6973,7 @@ function VoiceStatusBar({ bus, sessionId }) {
         telParts.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
           "div",
           {
+            "aria-hidden": "true",
             style: {
               fontSize: 11,
               color: "#8b949e",
