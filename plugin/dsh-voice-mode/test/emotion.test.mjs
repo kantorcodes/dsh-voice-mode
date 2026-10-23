@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -130,12 +130,26 @@ t('只有空白 → 0 段（trim 丢弃空段）', () => {
   assert.deepEqual(parseEmotionTags('   \n\t  '), [])
 })
 
-console.log('stripEmotionTags 已下线（批 D 选 2：删除未引用 export）')
-t('emotion 模块不再导出 stripEmotionTags（防回归：复活需走接线 + 评审）', () => {
-  // 批 D 选 2：stripEmotionTags 全 src 0 引用、ASR partial 不会含 emotion 标签；
-  // 留 export 即留死代码——ponytail 原则删除。本断言反向门禁：未来若复活 stripEmotionTags export，
-  // 应同时补一处接线 + 本断言移除（防止纯加 export 不加消费方）。
-  assert.ok(!('stripEmotionTags' in emotionMod), 'stripEmotionTags 不应再被导出（复活须同时补接线并移除本断言）')
+console.log('stripEmotionTags 已复活（B-3：Edge 引擎消费情绪标签）')
+t('emotion 导出 stripEmotionTags，且 Edge 引擎（tts-queue.ts）有真实消费方', () => {
+  // 批 D 选 2 曾把 stripEmotionTags 当死代码删掉；B-3 给了它真实消费方——
+  // Edge 引擎合成前必须剥掉 <laugh>/<sigh> 等情绪标签：它们含 <，会让 msedge-tts
+  // 的 SSML 模板非良构 → 上游断流 → 整句不读。本断言由反向门禁（不得导出）改为
+  // 正向门禁（导出 + 有消费方）：只加 export 不加接线仍是死代码。
+  assert.equal(
+    typeof emotionMod.stripEmotionTags,
+    'function',
+    'emotion 模块必须导出 stripEmotionTags（B-3：Edge 引擎用它剥离情绪标签）',
+  )
+  const queueSrc = readFileSync(join(here, '..', 'src', 'tts-queue.ts'), 'utf8')
+  assert.ok(
+    /import\s*\{[^}]*\bstripEmotionTags\b[^}]*\}\s*from\s*['"]\.\/emotion\.ts['"]/.test(queueSrc),
+    'tts-queue.ts 必须从 emotion.ts 导入 stripEmotionTags——纯加 export 不加消费方仍是死代码',
+  )
+  assert.ok(
+    /stripEmotionTags\s*\(/.test(queueSrc),
+    'tts-queue.ts 必须真的调用 stripEmotionTags（只 import 不调用 = 死代码）',
+  )
 })
 
 console.log(`\nemotion：${passed} 项通过`)

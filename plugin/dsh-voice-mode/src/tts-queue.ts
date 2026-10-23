@@ -12,6 +12,7 @@
  * chunk 到达时被丢弃，实现真正的静音。
  */
 import { MsEdgeTTS, OUTPUT_FORMAT, type ProsodyOptions } from 'msedge-tts'
+import { stripEmotionTags } from './emotion.ts'
 
 /** 合成引擎统一接口（云端/本地实现互替）。 */
 export interface TtsEngine {
@@ -105,6 +106,38 @@ function isValidMp3(buf: Buffer): boolean {
   return buf.length > 0 && buf[0] === MP3_MAGIC
 }
 
+/**
+ * XML 实体转义（& < > " '）。
+ *
+ * B-3 根因：msedge-tts 的 SSML 模板把文本**原样插值**（_SSMLTemplate 里直接
+ * `${input}`），不做任何转义。文本含 & 或 < 时 SSML 非良构 → 上游
+ * 「Stream closed before...」→ 队列重试 3 次耗尽 → tts-skip（用户听到「跳过一句」，
+ * 连败时甚至「朗读服务不可用」——整句不读）。
+ * 注：裸 > 是良构 XML，不属触发字符；此处仍按 XML 规范一并转义（对合成结果无影响）。
+ */
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+/**
+ * 空音频判定：0 字节，或 44 字节 RIFF/WAVE 且 data 块 size=0（旧形态的空 WAV）。
+ * 命中 = 「合成成功但无内容」（Edge 遇到纯情绪标签句即返回 0 字节）——不该下发帧，
+ * 也不该占掉全局句号或计失败（详见 pump 里的丢弃分支）。
+ */
+function isEmptyAudio(buf: Buffer): boolean {
+  if (buf.length === 0) return true
+  if (buf.length !== 44) return false
+  if (buf.toString('latin1', 0, 4) !== 'RIFF') return false
+  if (buf.toString('latin1', 8, 12) !== 'WAVE') return false
+  if (buf.toString('latin1', 36, 40) !== 'data') return false
+  return buf.readUInt32LE(40) === 0
+}
+
 /** Edge TTS 引擎（微软语音服务，云端；被朗读文本发送到微软）。 */
 export class EdgeTtsEngine implements TtsEngine {
   private voice: string
@@ -123,7 +156,13 @@ export class EdgeTtsEngine implements TtsEngine {
   }
 
   async synthesize(text: string, options: { voice?: string; rate?: number } = {}): Promise<Buffer> {
-    // Edge 直传云端，SSML 未启用，strip 另开批。
+    // B-3：先剥情绪标签（Edge 不支持这些自定义标签；且标签里的 < 会让 SSML 非良构），
+    // 再转义 XML 实体（& < > " '）——msedge-tts 的 SSML 模板原样插值文本，
+    // 不转义则上游断流 → 队列重试耗尽 → tts-skip（整句不读）。
+    const spoken = escapeXmlText(stripEmotionTags(text))
+    // 纯标签句（如「<laugh>」）：剥完只剩空白 → 零网络合成（不建连接、不重试）；
+    // 0 字节由队列层按空音频整句丢弃（不发帧、不占句号）。
+    if (spoken.trim() === '') return Buffer.alloc(0)
     const tts = new MsEdgeTTS()
     try {
       await tts.setMetadata(
@@ -131,7 +170,7 @@ export class EdgeTtsEngine implements TtsEngine {
         OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3,
         TTS_METADATA,
       )
-      const { audioStream } = tts.toStream(text, prosodyFromRate(options.rate ?? this.rate))
+      const { audioStream } = tts.toStream(spoken, prosodyFromRate(options.rate ?? this.rate))
       const chunks: Buffer[] = []
       for await (const chunk of audioStream) chunks.push(chunk as Buffer)
       const buf = Buffer.concat(chunks)
@@ -585,6 +624,11 @@ export class TtsQueue {
           this.onSkip?.(sessionId, item.text, q.failStreak)
           continue
         }
+        // B-3：空音频（0 字节 / 44 字节空 WAV）整句丢弃——不发帧、不占句号、
+        // 不计失败、不 onSkip。它是「合成成功但无内容」（如 Edge 遇到纯情绪标签句），
+        // 既不是失败（不该走 onSkip 提示），也不该占掉全局句号（seq 是全局发号器，
+        // 占掉即在句号序列里留空洞）；更不能清零 failStreak（那会洗掉真实的连败）。
+        if (isEmptyAudio(buf)) continue
         q.errorNotified = false // 有帧成功：复位不可达提示
         q.failStreak = 0
         q.backoff = 0 // 成功后退避清零，防下次失败时退避窗口无限递增

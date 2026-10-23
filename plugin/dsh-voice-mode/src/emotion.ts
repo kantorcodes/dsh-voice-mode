@@ -21,8 +21,29 @@ export interface EmotionSegment {
   whisper: boolean
 }
 
-/** 标签正则：<break N ms> / <whisper> / </whisper> / <laugh> / <sigh> / <emphasis>。大小写不敏感（gi 标志）。 */
-const TAG_RE = /<\s*(break\s+(?<ms>\d+)\s*ms|whisper|\/whisper|laugh|sigh|emphasis)\s*>/gi
+/** 标签正则的**单一真源**：<break N ms> / <whisper> / </whisper> / <laugh> / <sigh> / <emphasis>。
+ *  TAG_RE（解析用）与 STRIP_RE（剥离用）都由它构造——两处正则必须同源，
+ *  否则「解析认得的标签」与「Edge 合成前剥掉的标签」会漂移。 */
+const EMOTION_TAG_PATTERN = '<\\s*(break\\s+(?<ms>\\d+)\\s*ms|whisper|\\/whisper|laugh|sigh|emphasis)\\s*>'
+
+/** 标签正则（解析用）：大小写不敏感（gi 标志）。 */
+const TAG_RE = new RegExp(EMOTION_TAG_PATTERN, 'gi')
+
+/** 标签正则（剥离用）：与 TAG_RE 同源，独立实例避免共享 lastIndex。 */
+const STRIP_RE = new RegExp(EMOTION_TAG_PATTERN, 'gi')
+
+/**
+ * 剥离情绪标签：把每个标签替换成**空格**（不是空串）——否则相邻英文词会被粘连
+ * （"a<laugh>b" → "ab"），读出来会变成另一个词。
+ *
+ * 用途（B-3）：Edge 云端合成前必须先剥标签——标签里的 < 会让 msedge-tts 的 SSML
+ * 模板（原文 ${input} 原样插值）非良构 → 上游断流 → 整句不读（重试耗尽后 tts-skip）。
+ * Edge 不支持本项目的自定义标签（whisper 增益/break 静音是本地引擎的能力），
+ * 故这里只做「剥掉」，不解释其行为语义。
+ */
+export function stripEmotionTags(raw: string): string {
+  return raw.replace(STRIP_RE, ' ')
+}
 
 /**
  * 将含标签文本解析为段序列（每段带 whisper 状态）。
