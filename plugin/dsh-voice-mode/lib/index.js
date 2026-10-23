@@ -1182,6 +1182,71 @@ var SentenceSegmenter = class {
 
 // src/tts-queue.ts
 import { MsEdgeTTS, OUTPUT_FORMAT } from "./msedge-tts.cjs";
+
+// src/emotion.ts
+var EMOTION_TAG_PATTERN = "<\\s*(break\\s+(?<ms>\\d+)\\s*ms|whisper|\\/whisper|laugh|sigh|emphasis)\\s*>";
+var TAG_RE = new RegExp(EMOTION_TAG_PATTERN, "gi");
+var STRIP_RE = new RegExp(EMOTION_TAG_PATTERN, "gi");
+function stripEmotionTags(raw) {
+  return raw.replace(STRIP_RE, " ");
+}
+function parseEmotionTags(raw) {
+  const out = [];
+  let buf = "";
+  let whisper = false;
+  let pendingBreakMs = 0;
+  const flush = () => {
+    const t = buf.trim();
+    buf = "";
+    if (t.length === 0) return;
+    const seg = { text: t, whisper };
+    out.push(seg);
+  };
+  let lastEnd = 0;
+  for (const m of raw.matchAll(TAG_RE)) {
+    const idx = m.index ?? 0;
+    buf += raw.slice(lastEnd, idx);
+    lastEnd = idx + m[0].length;
+    const tag = (m[1] ?? "").toLowerCase().trim();
+    if (tag.startsWith("break")) {
+      const ms = Number(m.groups?.ms ?? 0);
+      if (!Number.isFinite(ms) || ms <= 0) continue;
+      if (buf.trim().length > 0) {
+        flush();
+      }
+      const last = out[out.length - 1];
+      if (last) {
+        ;
+        last.preBreakMs = (last.preBreakMs ?? 0) + ms;
+      } else {
+        pendingBreakMs += ms;
+      }
+    } else if (tag === "whisper") {
+      flush();
+      whisper = true;
+    } else if (tag === "/whisper") {
+      flush();
+      whisper = false;
+    } else {
+    }
+  }
+  buf += raw.slice(lastEnd);
+  flush();
+  if (pendingBreakMs > 0) {
+    const last = out[out.length - 1];
+    if (last) {
+      ;
+      last.preBreakMs = (last.preBreakMs ?? 0) + pendingBreakMs;
+    }
+    pendingBreakMs = 0;
+  }
+  if (whisper) {
+    for (const s of out) s.whisper = false;
+  }
+  return out;
+}
+
+// src/tts-queue.ts
 var MP3_MAGIC = 255;
 var TTS_METADATA = { wordBoundaryEnabled: false, sentenceBoundaryEnabled: false };
 var EDGE_VOICES_TIMEOUT_MS = 3e4;
@@ -1191,6 +1256,17 @@ function prosodyFromRate(rate) {
 }
 function isValidMp3(buf) {
   return buf.length > 0 && buf[0] === MP3_MAGIC;
+}
+function escapeXmlText(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+function isEmptyAudio(buf) {
+  if (buf.length === 0) return true;
+  if (buf.length !== 44) return false;
+  if (buf.toString("latin1", 0, 4) !== "RIFF") return false;
+  if (buf.toString("latin1", 8, 12) !== "WAVE") return false;
+  if (buf.toString("latin1", 36, 40) !== "data") return false;
+  return buf.readUInt32LE(40) === 0;
 }
 var EdgeTtsEngine = class {
   voice;
@@ -1205,6 +1281,8 @@ var EdgeTtsEngine = class {
     if (rate !== void 0 && Number.isFinite(rate)) this.rate = rate;
   }
   async synthesize(text, options = {}) {
+    const spoken = escapeXmlText(stripEmotionTags(text));
+    if (spoken.trim() === "") return Buffer.alloc(0);
     const tts = new MsEdgeTTS();
     try {
       await tts.setMetadata(
@@ -1212,7 +1290,7 @@ var EdgeTtsEngine = class {
         OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3,
         TTS_METADATA
       );
-      const { audioStream } = tts.toStream(text, prosodyFromRate(options.rate ?? this.rate));
+      const { audioStream } = tts.toStream(spoken, prosodyFromRate(options.rate ?? this.rate));
       const chunks = [];
       for await (const chunk of audioStream) chunks.push(chunk);
       const buf = Buffer.concat(chunks);
@@ -1553,6 +1631,7 @@ var TtsQueue = class {
           this.onSkip?.(sessionId, item.text, q.failStreak);
           continue;
         }
+        if (isEmptyAudio(buf)) continue;
         q.errorNotified = false;
         q.failStreak = 0;
         q.backoff = 0;
@@ -1686,64 +1765,6 @@ function resolveNativeRuntime(opts = {}) {
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { join as join3 } from "node:path";
 import { statSync as statSync2 } from "node:fs";
-
-// src/emotion.ts
-var TAG_RE = /<\s*(break\s+(?<ms>\d+)\s*ms|whisper|\/whisper|laugh|sigh|emphasis)\s*>/gi;
-function parseEmotionTags(raw) {
-  const out = [];
-  let buf = "";
-  let whisper = false;
-  let pendingBreakMs = 0;
-  const flush = () => {
-    const t = buf.trim();
-    buf = "";
-    if (t.length === 0) return;
-    const seg = { text: t, whisper };
-    out.push(seg);
-  };
-  let lastEnd = 0;
-  for (const m of raw.matchAll(TAG_RE)) {
-    const idx = m.index ?? 0;
-    buf += raw.slice(lastEnd, idx);
-    lastEnd = idx + m[0].length;
-    const tag = (m[1] ?? "").toLowerCase().trim();
-    if (tag.startsWith("break")) {
-      const ms = Number(m.groups?.ms ?? 0);
-      if (!Number.isFinite(ms) || ms <= 0) continue;
-      if (buf.trim().length > 0) {
-        flush();
-      }
-      const last = out[out.length - 1];
-      if (last) {
-        ;
-        last.preBreakMs = (last.preBreakMs ?? 0) + ms;
-      } else {
-        pendingBreakMs += ms;
-      }
-    } else if (tag === "whisper") {
-      flush();
-      whisper = true;
-    } else if (tag === "/whisper") {
-      flush();
-      whisper = false;
-    } else {
-    }
-  }
-  buf += raw.slice(lastEnd);
-  flush();
-  if (pendingBreakMs > 0) {
-    const last = out[out.length - 1];
-    if (last) {
-      ;
-      last.preBreakMs = (last.preBreakMs ?? 0) + pendingBreakMs;
-    }
-    pendingBreakMs = 0;
-  }
-  if (whisper) {
-    for (const s of out) s.whisper = false;
-  }
-  return out;
-}
 
 // src/voice-catalog.ts
 var VITS_SPEAKERS = [

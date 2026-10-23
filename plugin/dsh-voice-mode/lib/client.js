@@ -496,6 +496,10 @@ function createAsrEngine(config, sessionId) {
   let partialInFlight = false;
   let resetGate = Promise.resolve();
   let segmentEpoch = 0;
+  let discardGen = 0;
+  let finalizeSeq = 0;
+  let nextEmitSeq = 1;
+  const pendingFinals = /* @__PURE__ */ new Map();
   let wakeSilenceMs = 0;
   let wakeConsumed = false;
   let forcePending = false;
@@ -538,6 +542,18 @@ function createAsrEngine(config, sessionId) {
       } catch {
       }
     }
+  };
+  const flushOrderedFinals = () => {
+    while (pendingFinals.has(nextEmitSeq)) {
+      const item = pendingFinals.get(nextEmitSeq);
+      pendingFinals.delete(nextEmitSeq);
+      nextEmitSeq++;
+      if (item) emit(transcriptListeners, item.text, item.meta);
+    }
+  };
+  const settleFinal = (seq, item) => {
+    pendingFinals.set(seq, item);
+    flushOrderedFinals();
   };
   const resetFailStreaks = () => {
     partialFailStreak = 0;
@@ -741,6 +757,7 @@ function createAsrEngine(config, sessionId) {
     partialFailStreak = 0;
     detectFailStreak = 0;
     segmentEpoch++;
+    discardGen++;
     segment = [];
     segmentMs = 0;
     speechMs = 0;
@@ -766,6 +783,14 @@ function createAsrEngine(config, sessionId) {
     const recoverySegment = segment;
     const epochSnapshot = segmentEpoch;
     segmentEpoch++;
+    const discardSnapshot = discardGen;
+    const mySeq = ++finalizeSeq;
+    let settled = false;
+    const settle = (item) => {
+      if (settled) return;
+      settled = true;
+      settleFinal(mySeq, item);
+    };
     const meta = { force: forcePending };
     const consumedWake = wakeConsumed;
     wakeConsumed = false;
@@ -788,7 +813,10 @@ function createAsrEngine(config, sessionId) {
       const restoreState = () => setState(active ? speechActive || holdActive ? "speech" : wakeEnabled ? "wake" : "listening" : "idle");
       for (let attempt = 0; attempt < MAX_FINAL_ATTEMPTS; attempt++) {
         if (attempt > 0) {
-          if (segmentEpoch !== epochSnapshot + 1) return;
+          if (discardGen !== discardSnapshot) {
+            settle(null);
+            return;
+          }
           await new Promise((r) => setTimeout(r, 500 * attempt));
         }
         const useFull = attempt > 0;
@@ -832,8 +860,16 @@ function createAsrEngine(config, sessionId) {
           continue;
         }
         if (res.status === 403 && config.onSessionExpired) {
-          const recovered = await config.onSessionExpired();
-          if (recovered && segmentEpoch === epochSnapshot + 1) {
+          let expireTimer = null;
+          const recovered = await Promise.race([
+            config.onSessionExpired(),
+            new Promise((resolve) => {
+              expireTimer = setTimeout(() => resolve(false), 5e3);
+            })
+          ]).finally(() => {
+            if (expireTimer) clearTimeout(expireTimer);
+          }).catch(() => false);
+          if (recovered && discardGen === discardSnapshot) {
             try {
               res = await fetch(asrUrl(true, 0, epochSnapshot), {
                 signal: AbortSignal.timeout(25e3),
@@ -857,7 +893,10 @@ function createAsrEngine(config, sessionId) {
           if (attempt === MAX_FINAL_ATTEMPTS - 1) console.warn("[dsh-voice-mode] finalize response is not JSON (retries exhausted)");
           continue;
         }
-        if (segmentEpoch !== epochSnapshot + 1) return;
+        if (discardGen !== discardSnapshot) {
+          settle(null);
+          return;
+        }
         resetFailStreaks();
         restoreState();
         const rawText = out.text ?? "";
@@ -866,17 +905,25 @@ function createAsrEngine(config, sessionId) {
           if ((wasSalvaged || wasYielded) && matchBackchannel(finalText)) {
             emit(noticeListeners, "backchannelDropped");
             if (active && wakeEnabled) setState("listening");
+            settle(null);
             return;
           }
-          emit(transcriptListeners, finalText, meta);
-        } else if (consumedWake && active && !speechActive && !holdActive) {
-          setState("listening");
+          settle({ text: finalText, meta });
+        } else {
+          settle(null);
+          if (consumedWake && active && !speechActive && !holdActive) {
+            setState("listening");
+          }
         }
         return;
       }
       restoreState();
+      settle(null);
       emitError("recognitionFail");
-    })();
+    })().catch((err) => {
+      console.warn(`[dsh-voice-mode] finalize unexpected error (seq=${mySeq}, settled as no-emit)`, err);
+      settle(null);
+    });
   };
   let latestResidualRms = 0;
   let echoFloorRms = 0;
@@ -1034,6 +1081,7 @@ function createAsrEngine(config, sessionId) {
           finalizeSegment();
         } else {
           segmentEpoch++;
+          discardGen++;
           segment = [];
           speechActive = false;
           salvagedSegment = false;
@@ -1164,6 +1212,7 @@ function createAsrEngine(config, sessionId) {
     const myCtx = audioCtx;
     inFlush = true;
     segmentEpoch++;
+    discardGen++;
     forcePending = false;
     holdActive = false;
     segment = [];
@@ -1243,6 +1292,7 @@ function createAsrEngine(config, sessionId) {
       startSeq++;
       const myStartSeq = startSeq;
       segmentEpoch++;
+      discardGen++;
       partialFailStreak = 0;
       detectFailStreak = 0;
       lastPollAt = 0;
@@ -1292,6 +1342,7 @@ function createAsrEngine(config, sessionId) {
       if (!active || holdActive) return;
       holdActive = true;
       segmentEpoch++;
+      discardGen++;
       wakeConsumed = false;
       salvagedSegment = false;
       yieldedSegment = false;
@@ -1312,6 +1363,7 @@ function createAsrEngine(config, sessionId) {
     },
     discardSegment() {
       segmentEpoch++;
+      discardGen++;
       partialFailStreak = 0;
       detectFailStreak = 0;
       segment = [];
@@ -1369,7 +1421,9 @@ function createAsrEngine(config, sessionId) {
       holdActive = false;
       if (cancel) {
         segmentEpoch++;
+        discardGen++;
         segment = [];
+        uploadedSamples = 0;
         salvagedSegment = false;
         yieldedSegment = false;
         resetFailStreaks();
@@ -2452,6 +2506,16 @@ function createScopeBridge(raw) {
       resubscribe();
     }
   };
+}
+var RENEW_WHILE_HIDDEN = true;
+var IDLE_USER_ACTIVITY_CAP_MS = 2 * 60 * 60 * 1e3;
+function idleBusy(input) {
+  if (input.hidden && !RENEW_WHILE_HIDDEN) return false;
+  return input.playing || input.turn === "agent-speaking" || input.running;
+}
+function idleAction(input) {
+  if (input.busy && input.sinceUserActivityMs <= IDLE_USER_ACTIVITY_CAP_MS) return "renew";
+  return input.warn ? "warn" : "exit";
 }
 
 // src/runtime-boot.ts
@@ -3896,7 +3960,7 @@ function telemetryDeltas(tel) {
   }
   return out;
 }
-var BUILD_TAG = "caaa39c";
+var BUILD_TAG = "477531f";
 var TELEMETRY_FLAG = "dsh-voice-mode.telemetry";
 var telemetryEnabled = typeof localStorage !== "undefined" && localStorage.getItem(TELEMETRY_FLAG) === "1";
 console.log("[dsh-voice] build=" + BUILD_TAG);
@@ -5157,6 +5221,7 @@ function MicButton({
   const idleWarnTimerRef = (0, import_react3.useRef)(null);
   const idleWarnActiveRef = (0, import_react3.useRef)(false);
   const idleClearErrorRef = (0, import_react3.useRef)(null);
+  const idleUserActivityAtRef = (0, import_react3.useRef)(Date.now());
   const runningRef = (0, import_react3.useRef)(false);
   const mountedRef = (0, import_react3.useRef)(true);
   const holdCtrlRef = (0, import_react3.useRef)(false);
@@ -5259,6 +5324,12 @@ function MicButton({
       return bootNow();
     }
   };
+  const idleBusyNow = () => idleBusy({
+    playing: bus.ui.playing,
+    turn: bus.ui.turn,
+    running: runningRef.current,
+    hidden: document.hidden
+  });
   const clearIdle = () => {
     if (idleTimerRef.current) {
       clearTimeout(idleTimerRef.current);
@@ -5277,12 +5348,22 @@ function MicButton({
       bus.setUi({ idleWarn: false });
     }
   };
-  const resetIdle = () => {
+  const resetIdle = (userActivity = true) => {
     clearIdle();
+    if (userActivity) idleUserActivityAtRef.current = Date.now();
     const idleMs = (bootNow().idleTimeoutMinutes > 0 ? bootNow().idleTimeoutMinutes : 10) * 60 * 1e3;
     if (idleMs > 3e4) {
       idleWarnTimerRef.current = setTimeout(() => {
         idleWarnTimerRef.current = null;
+        const action = idleAction({
+          busy: idleBusyNow(),
+          warn: true,
+          sinceUserActivityMs: Date.now() - idleUserActivityAtRef.current
+        });
+        if (action === "renew") {
+          resetIdle(false);
+          return;
+        }
         idleWarnActiveRef.current = true;
         bus.setUi({ idleWarn: true });
       }, idleMs - 3e4);
@@ -5291,6 +5372,15 @@ function MicButton({
       idleTimerRef.current = null;
       const sid = sidRef.current;
       if (localRef.current === "on" && sid) {
+        const action = idleAction({
+          busy: idleBusyNow(),
+          warn: false,
+          sinceUserActivityMs: Date.now() - idleUserActivityAtRef.current
+        });
+        if (action === "renew") {
+          resetIdle(false);
+          return;
+        }
         const quitMsg = t("idleTimeoutQuit");
         void exitModeRef.current("idle").then(() => {
           bus.setUi({ error: bus.ui.error ?? quitMsg });
