@@ -118,6 +118,18 @@ for (let i = 0; i < 5; i++) {
   await page.evaluate(() => { const b = Array.from(document.querySelectorAll('[role="dialog"] button')).find((x) => /continue|later|skip|ok|继续|稍后|跳过|好的|确定/i.test(x.textContent || '')); b?.click() })
   await page.waitForTimeout(700)
 }
+// 0.2.x 宿主的预览公告 / 登录门遮罩（role=presentation，不是 role=dialog）会盖住输入区：Escape + 关闭按钮逐个关掉
+for (let i = 0; i < 5; i++) {
+  if (!(await page.evaluate(() => !!document.querySelector('[role="presentation"]')))) break
+  await page.keyboard.press('Escape').catch(() => {})
+  await page.waitForTimeout(400)
+  await page.evaluate(() => {
+    const root = document.querySelector('[role="presentation"]')
+    const b = root && Array.from(root.querySelectorAll('button')).find((x) => /close|got it|later|skip|ok|关闭|知道了|稍后|跳过|好的|确定/i.test((x.getAttribute('aria-label') || '') + ' ' + (x.textContent || '')))
+    b?.click()
+  })
+  await page.waitForTimeout(600)
+}
 const mic = await page.waitForSelector('[data-dshvm="mic"]', { timeout: 30000 }).catch(() => null)
 if (!mic) { bad('mic 按钮未渲染'); await closer(); process.exit(1) }
 ok('mic 按钮渲染（当前会话已选中）')
@@ -168,6 +180,21 @@ if (once) {
   const st = await page.evaluate(async () => (await fetch('/voice-mode/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'once' }) })).status)
   st === 200 ? ok('交互模式已设为 once') : bad(`设置 once 失败（HTTP ${st}）`)
 }
+// I-19 读屏口径：读屏软件只播报 aria-live 区域的文本变化。进入前挂观察器，统计识别全程每个 live 区的变化次数与内容。
+await page.evaluate(() => {
+  window.__live = []
+  const seen = new WeakSet()
+  const hook = () => document.querySelectorAll('[aria-live]').forEach((el) => {
+    if (seen.has(el) || el.closest('[aria-hidden="true"]')) return
+    seen.add(el)
+    const rec = { tag: el.getAttribute('data-dshvm') || el.getAttribute('role') || el.tagName, texts: [el.textContent || ''] }
+    window.__live.push(rec)
+    new MutationObserver(() => { const t = el.textContent || ''; if (t !== rec.texts[rec.texts.length - 1]) rec.texts.push(t) })
+      .observe(el, { subtree: true, childList: true, characterData: true })
+  })
+  hook(); new MutationObserver(hook).observe(document.body, { subtree: true, childList: true })
+})
+const liveStart = Date.now()
 await mic.click()
 let state = ''
 for (let i = 0; i < 30; i++) {
@@ -183,6 +210,17 @@ for (let i = 0; i < 40 && !heard; i++) {
 }
 console.log('  识别文本片段:', JSON.stringify([...new Set(texts)].slice(-4)))
 heard ? ok(`真实语音经 采集→worklet→/asr→host 识别：命中关键词「${WANT.join('」「')}」`) : bad(`未识别到关键词（/asr 状态码：${[...new Set(asrStatus)].join(',') || '无请求'}）`)
+{
+  const live = await page.evaluate(() => window.__live)
+  const secs = Math.max(1, (Date.now() - liveStart) / 1000)
+  const changes = live.reduce((n, r) => n + r.texts.length - 1, 0)
+  const said = [...new Set(texts)].filter((t) => t.length >= 2)
+  const leaked = live.filter((r) => r.texts.some((x) => said.some((t) => x.includes(t))))
+  console.log('  读屏播报（aria-live 变化）:', JSON.stringify(live.filter((r) => r.texts.length > 1).map((r) => ({ [r.tag]: r.texts.slice(1, 8) }))))
+  leaked.length === 0 ? ok(`实时转写文字未进入任何读屏播报区（识别 ${texts.length} 次 partial/final）`) : bad(`实时转写进入了读屏播报区：${leaked.map((r) => r.tag).join(',')}`)
+  // 识别全程只应有状态翻转（聆听/说话/识别中…），远少于每秒一次；旧实现每次 partial 与每秒计时都会触发
+  changes <= Math.ceil(secs / 3) + 4 ? ok(`读屏播报 ${changes} 次 / ${secs.toFixed(0)}s（只随状态翻转，不随转写与计时刷屏）`) : bad(`读屏播报过于频繁：${changes} 次 / ${secs.toFixed(0)}s`)
+}
 asrStatus.length && asrStatus.every((s) => s === 200) ? ok(`/voice-mode/asr 请求全部 200（${asrStatus.length} 次）`) : bad(`/asr 出现非 200：${[...new Set(asrStatus)].join(',')}`)
 if (ttsDown && heard) {
   // 负面路径：LLM 回复的每一句都合成失败 → host 连续 tts-skip（streak 递增）→ 客户端必须出现可行动提示
