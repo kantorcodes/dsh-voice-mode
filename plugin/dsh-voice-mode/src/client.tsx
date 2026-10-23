@@ -27,6 +27,8 @@ import {
   focusClaim,
   focusRelease,
   handleReplaced,
+  idleAction,
+  idleBusy,
   isEditingShortcut,
   isAuxClickToIgnore,
   isPrimaryPress,
@@ -1970,6 +1972,9 @@ export function MicButton({
   const idleWarnActiveRef = useRef(false)
   /** 批 G 任务 2：空闲退出错误提示的自动清除定时器（3 秒后清 error）。 */
   const idleClearErrorRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** B-2：最后一次**真实用户活动**的时刻（用户交互；朗读/生成不算）。
+   *  空闲续期（长朗读不中断）**不**刷新它——2h 绝对上限以它为起点。 */
+  const idleUserActivityAtRef = useRef(Date.now())
   const runningRef = useRef(false)
   /** 组件存活守卫：enterMode 异步流程（getUserMedia 权限框）期间卸载时中止收尾。 */
   const mountedRef = useRef(true)
@@ -2109,6 +2114,16 @@ export function MicButton({
     }
   }
 
+  /** B-2：当前是否算「活动」（正在朗读 / AI 正在说话 / 会话在跑）——空闲续期口径。
+   *  隐藏标签页仍按活动计（麦克风已关，隐私收益≈0；由 2h 绝对上限兜底）。 */
+  const idleBusyNow = (): boolean =>
+    idleBusy({
+      playing: bus.ui.playing,
+      turn: bus.ui.turn,
+      running: runningRef.current,
+      hidden: document.hidden,
+    })
+
   const clearIdle = (): void => {
     if (idleTimerRef.current) {
       clearTimeout(idleTimerRef.current)
@@ -2128,13 +2143,26 @@ export function MicButton({
       bus.setUi({ idleWarn: false })
     }
   }
-  const resetIdle = (): void => {
+  const resetIdle = (userActivity = true): void => {
     clearIdle()
+    // B-2：默认（真实用户活动）刷新「用户活动时刻」；续期调用传 false —— 2h 绝对上限
+    // 以最后一次真实用户活动为起点，朗读续期不应把它往后推。
+    if (userActivity) idleUserActivityAtRef.current = Date.now()
     const idleMs = (bootNow().idleTimeoutMinutes > 0 ? bootNow().idleTimeoutMinutes : 10) * 60 * 1000
     // 批 G 任务 2：9:30 弹 toast「30 秒后自动退出」——总时长 ≤ 30s 时跳过预警（避免直接退出又立刻闪提示）。
     if (idleMs > 30_000) {
       idleWarnTimerRef.current = setTimeout(() => {
         idleWarnTimerRef.current = null
+        // B-2：正在朗读/说话/在跑 → 续期（不预警）：长朗读不该被空闲退出打断。
+        const action = idleAction({
+          busy: idleBusyNow(),
+          warn: true,
+          sinceUserActivityMs: Date.now() - idleUserActivityAtRef.current,
+        })
+        if (action === 'renew') {
+          resetIdle(false)
+          return
+        }
         idleWarnActiveRef.current = true
         bus.setUi({ idleWarn: true })
       }, idleMs - 30_000)
@@ -2143,6 +2171,16 @@ export function MicButton({
       idleTimerRef.current = null
       const sid = sidRef.current
       if (localRef.current === 'on' && sid) {
+        // B-2：正在朗读/说话/在跑且未超 2h 绝对上限 → 续期（长朗读不会中途下线）。
+        const action = idleAction({
+          busy: idleBusyNow(),
+          warn: false,
+          sinceUserActivityMs: Date.now() - idleUserActivityAtRef.current,
+        })
+        if (action === 'renew') {
+          resetIdle(false)
+          return
+        }
         // 批 G 任务 2：空闲退出时显示「空闲超时已自动退出（设置里可调时长）」3 秒后清。
         // Issue #15 UX Blocker：提示必须在退出流程**之后**写——exitMode 内的
         // clearIdle 会清掉此处 arm 的 3s 计时器、bus.setUi({error:null}) 会擦掉文案，

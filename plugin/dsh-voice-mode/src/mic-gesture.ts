@@ -510,3 +510,63 @@ export function createScopeBridge(raw: ScopeLike & { invalidate?: () => void }):
     },
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 空闲超时（长朗读不该被空闲退出打断）
+ *
+ * 文档承诺（README「空闲退出」段 + 设置表）：「正在朗读计为活动，长朗读不会中途下线」。
+ * 原实现只判「有没有进入语音模式」，不看当前是否正在朗读/说话/生成 → 长朗读中途被
+ * 空闲退出切断，承诺落空。这里的纯函数给出「活动口径」与「计时器该做什么」两处判定。
+ * ------------------------------------------------------------------------- */
+
+/** 隐藏标签页时是否仍按「活动」续期。
+ *  隐藏时麦克风已被客户端主动关闭（隐私）→ 「隐藏即不算活动」的隐私收益≈0；
+ *  代价却是后台的长朗读被空闲退出切断。故取 true（仍续期），由 2h 绝对上限兜底。 */
+export const RENEW_WHILE_HIDDEN = true
+
+/** 绝对上限：距最后一次**真实用户活动**超过 2h 即强制退出（即便一直在续期）。
+ *  「真实用户活动」= 用户交互（说话 / 打断 / 定稿 / 进入语音）；朗读与生成不算。 */
+export const IDLE_USER_ACTIVITY_CAP_MS = 2 * 60 * 60 * 1000
+
+/** 空闲活动口径的输入。 */
+export interface IdleActivityInput {
+  /** 正在朗读（AI 音频在播）。 */
+  playing: boolean
+  /** host 回合状态（'agent-speaking' = AI 正在说话）。 */
+  turn: string | undefined
+  /** 会话在跑（宿主 running）。 */
+  running: boolean
+  /** 标签页是否隐藏（隐藏时麦克风已被关闭 → 隐私收益≈0，仍按活动续期）。 */
+  hidden?: boolean
+}
+
+/** 当前是否算「活动」：正在朗读 / AI 正在说话 / 会话在跑。
+ *
+ *  **不含 ttsDrained**：readAloud=off 时它长期为 false，纳入活动口径会让空闲退出永不触发。
+ *  **不含 partial / 草稿**：那是用户正在说话，由调用方的活动点（resetIdle）负责。 */
+export function idleBusy(input: IdleActivityInput): boolean {
+  // 隐藏口径（RENEW_WHILE_HIDDEN）：隐藏时麦克风已关，「隐藏不算活动」的隐私收益≈0
+  // → 隐藏仍按活动判定；该常量翻成 false 时隐藏页即不算活动（口径只此一处）。
+  if (input.hidden && !RENEW_WHILE_HIDDEN) return false
+  return input.playing || input.turn === 'agent-speaking' || input.running
+}
+
+/** 空闲计时器该做什么。 */
+export type IdleAction = 'renew' | 'warn' | 'exit'
+
+/** 空闲计时的动作判定。
+ *
+ *  - 'renew'：正在朗读/说话/在跑且未超绝对上限 → 续期（长朗读不会中途下线）；
+ *  - 'warn'：到了预警窗且不忙 → 提示「30 秒后自动退出」；
+ *  - 'exit'：到点且不忙（或已超 2h 绝对上限）→ 退出语音模式。 */
+export function idleAction(input: {
+  /** 是否算活动（同 idleBusy 口径） */
+  busy: boolean
+  /** 是否处于「30s 后退出」的预警窗 */
+  warn: boolean
+  /** 距最后一次真实用户活动的毫秒数 */
+  sinceUserActivityMs: number
+}): IdleAction {
+  if (input.busy && input.sinceUserActivityMs <= IDLE_USER_ACTIVITY_CAP_MS) return 'renew'
+  return input.warn ? 'warn' : 'exit'
+}
