@@ -45,6 +45,11 @@ DSH 语音双工插件：进入语音模式 → 流式识别入草稿 → 静音
 - 本地 TTS 模型：就绪以「模型文件已下载」为准（跨引擎持久，非子进程 init）；`/models/download` 触发下载、`/models/clean` 删除本地；int8/fp32 分目录缓存、切换不重下。
 - **宿主兼容 0.1.1-rc.2 → 0.2.1-rc.2**（全版本支持，engines.dsh=`>=0.1.1-rc.2 <0.3.0` 带上界——dsh 0.2.1-alpha.4 起 next/alpha 通道 engines.dsh 单独硬校验，不满足即拒绝加载，上界封 0.3.0 防未验证大版本被放行；0.1.7+ 走设置双路径 shim：客户端无 `settingsScope`（**不得列入 client inject**，用 `ctx.get` 可选查找）、官方存储拒写本插件条目 → 用户设置落 `$DSH_HOME/voice-mode.settings.json`（`src/settings-store.ts`，端点 `/voice-mode/settings`）；设置卡片槽位 ≤0.1.5=`settings.plugin.item`、≥0.1.6-alpha=`plugins.bundle.config`（两个都注册）；设置弹窗入口三次迁移：≤0.2.0 侧栏/More 菜单 → 0.2.1-alpha.4/5 起侧栏底部「Account menu」弹出层（冒烟脚本 openSettings 已适配，未认证时先关登录门）；host 勿直接访问 `ctx.profileContext`（旧宿主抛错）；见 compat-contract §12/§13）：9 个 `dsh.client.inject` 锚点取交集；升级 dsh 前先 `npm run check:anchors` 预检，回归用 `npm run verify:dual`（17 版 typecheck + 14 核心隔离冒烟，核心用 `scripts/ensure-core.sh <版本>` 备于 /tmp/dshcore）；RPC 端点 schema 实证表见 docs/compat-contract.md §8（逐端点：session/list 用 `args._request`；session/create|prompt|cancel 用 `args.request`；settings/describe、llm/listProviders 不嵌字段；所有 /api/* 强制 args 信封）；2026-09-18 alpha 复核见 §9；0.1.7-rc.2/0.2.0-rc.x 复核见 §12；0.2.1-alpha.5/rc.2 复核见 §19。
 - **国际化（test/strings-coverage 守卫）**：用户可见文案只走词典 `strings.ts`，经 `i18n.ts` 接官方 `ctx.locale`（0.1.1→0.2.0 全版本有，切换即时生效，组件入口 `useLang()`，无服务回退 `<html lang>`）。host 不发自然语言：错误只发稳定码（`errors.ts` → 客户端 `errorText()`，绝不展示 `error` 原文）；LLM 提示词中/英两版（客户端 /toggle 上报 `lang`，缺省中文）；试听例句按音色语种；音色数据 `voice-catalog.ts` 单一来源、标签 `voice-labels.ts` 按语言生成；日志一律英文；插件名称/描述走 `locale/*.json`+`icon`。UI 文件新增中文字面量会被 AST 红线拦截。
+- **空闲续期口径（B-2，2026-10-23 行为口径）**：空闲退出不是「进语音模式满 N 分钟就退」。① `playing` / `turn=agent-speaking` / `running` 期间**续期**——长朗读、长工具回合不会中途被空闲退出切断（README 承诺）。
+  ② 2h 是「距最后一次**真实用户活动**」的**软上限**（只有用户交互刷新基准；朗读/生成只续期、不刷新）——超限强制退出。
+  ③ 隐藏标签页**仍按活动续期**（麦克风已关、隐私收益≈0，由 2h 兜底）。
+  ④ 忙碌转空闲后：续期只重排定时器、不刷新基准 → 退出最迟**再等一个配置窗口**（`idleTimeoutMinutes`，默认 5 分钟）。
+  口径来源：2026-10-23 收口时的实现行为（**非对外的时限承诺**，实际窗口以设置项为准）——`mic-gesture.ts` 的 `idleBusy`/`idleAction` + `client.tsx` 的 `resetIdle`。
 
 ## 设置语义
 
@@ -78,11 +83,11 @@ DSH 语音双工插件：进入语音模式 → 流式识别入草稿 → 静音
 
 - 原生 AEC 失效兜底（耳机无原生 AEC / Safari）：自研 AEC 的 delay 对齐需 FDLMS+RES；
   该场景**尚无真机数据**，也是回声地板棘轮唯一还可能发作的一格
-- ADR-0006：第一级探测**已实现**（asr.ts:1126-1137 / client.tsx:2558-2563，探测到原生 AEC 失效即落 manual 并提示；client 侧原值 2106-2118 为 2026-10-19 实测，已随 v0.7.27 重写漂移，本轮刷新，asr 侧未漂移）；未做的是二级探测，阈值可用 fixture verdict 数据标定。
+- ADR-0006：第一级探测**已实现**（asr.ts:1212-1223 / client.tsx:2596-2601，探测到原生 AEC 失效即落 manual 并提示；client 侧原值 2106-2118 为 2026-10-19 实测，已随 v0.7.27 重写漂移，本轮刷新，asr 侧未漂移）；未做的是二级探测，阈值可用 fixture verdict 数据标定。
   副作用：manual 下待机态拿不到音频，唤醒词不触发（设置面板已声明「hold / 手动打断下不生效」）——无原生 AEC 的浏览器（Safari）+ 唤醒词 = 持续聆听等于关闭
 - Ctrl 强制发送在「已停顿但草稿有累积」时不 flush（Minor，需处理 in-flight 定稿竞态）
 - 松手恰在 30s 滚段边界（~1-3s 窗口）的竞态（Rare，需给 hold 引入待发块队列）
-- **2026-10-15 静态审计登记（未真机复核，发版前不盲改引擎）**：① `stop()` 落在 getUserMedia 之后、active=true 之前（resume/addModule 窗口）时麦克风不被清理（asr.ts:1099-1210，startRecorder→active=true 窗口）；② `stop()` 后紧跟 `start()` 时旧 stopRecorder 收尾会清掉新 audioCtx 引用（asr.ts:1213-1272 stopRecorder 收尾；client.tsx:2052 `void engine.stop()` 调用点有风险；原值 1672 为 2026-10-19 实测，已随 v0.7.27 重写漂移，本轮刷新）；③ toggle 下 Ctrl 取消 hold（endHeld(true)）不清 uploadedSamples/不 reset host 流，下一段开头丢一小段（asr.ts:1466-1484，endHeld cancel 分支）；④ 回声地板棘轮：外放音量调大后 doubleTalk 持续为真，地板冻结在旧低值（asr.ts:879-887）；⑤ NLMS 权重一旦 NaN 永久输出 0（aec.ts:91-92）；⑥ 句切分：小数点落在 delta 边界会被拆句、跨 chunk 的 ``` 代码块会被朗读（segmenter.ts:57 切分正则 / :16 代码块剥离）
+- **2026-10-15 静态审计登记（未真机复核，发版前不盲改引擎）**：① `stop()` 落在 getUserMedia 之后、active=true 之前（resume/addModule 窗口）时麦克风不被清理（asr.ts:1185-1296，startRecorder→active=true 窗口）；② `stop()` 后紧跟 `start()` 时旧 stopRecorder 收尾会清掉新 audioCtx 引用（asr.ts:1299-1358 stopRecorder 收尾；client.tsx:2057 `void engine.stop()` 调用点有风险；原值 1672 为 2026-10-19 实测，已随 v0.7.27 重写漂移，本轮刷新）；③ hold 取消丢弃本段时上传水位未重置 → 下一段丢句首：**2026-10-23 已修（P0 B-4）**——取消分支补 `uploadedSamples = 0` 复位（asr.ts:1635，台架 test/hold-cancel-watermark.test.mjs 锁住「取消后下一句短于陈旧水位仍出定稿 / 长于水位不丢句首」）；真实触发路径是 toggle 模式「朗读中按住接管 → 上滑≥40px 或 pointercancel 取消 → 继续说话」，Ctrl 松开走 `endHeld(false)` 定稿、**不**触发取消（asr.ts:1630-1646，endHeld cancel 分支）；cancel 分支**仍未** reset host 流（残留待办）；④ 回声地板棘轮：外放音量调大后 doubleTalk 持续为真，地板冻结在旧低值（asr.ts:964-972）；⑤ NLMS 权重一旦 NaN 永久输出 0（aec.ts:91-92）；⑥ 句切分：小数点落在 delta 边界会被拆句、跨 chunk 的 ``` 代码块会被朗读（segmenter.ts:57 切分正则 / :16 代码块剥离）
 - **host 侧待核对（依赖宿主 Host/Origin 前置防护）**：DNS rebinding（`sameOriginRequest` 只比 Origin 与 Host，不校验 Host 白名单；dsh 以 `--trusted-host` 启动时宿主已拦）；经 HTTPS 反代时回环判定与限流键都取 remoteAddress（所有用户共享一个桶）；`toggle:${sessionId}` 限流键先于会话存在性校验，可被任意构造占满 maxKeys；SSE `/stream` 无 Origin 校验、tabId/sessionId 可见；`/models/status` 经 `queue.status()` 透出本地引擎 engineError 原文
 - 发布流程见维护者本机文档（git push + npm publish + tag + GitHub release；`docs/RELEASE-WORKFLOW.md` 与 `scripts/release.sh`、`check-dsh-version.sh` 按 publication-policy 不入库）
 

@@ -164,7 +164,7 @@
   3. 观察 AI 是否立即停止 + 1.5s 内新内容不播
 - **预期**：当前句立即停止；1.5s 内保持静音（不读新内容）；用户说新内容 → AI 收 + 取消回合
 - **失败信号**：AI 继续朗读完整长段 / 1.5s 后直接接着读 / 「嗯」未生效
-- **回退**：检查 `src/asr.ts:59 matchBackchannel` + `src/client.tsx:1460` 帧守卫（`backchannelHoldUntil` 让位窗口内丢弃 TTS 帧）+ `src/client.tsx:2727` 的 `setBackchannelHold` 调用点（方法定义在 `:1647`）
+- **回退**：检查 `src/asr.ts:59 matchBackchannel` + `src/client.tsx:1462` 帧守卫（`backchannelHoldUntil` 让位窗口内丢弃 TTS 帧）+ `src/client.tsx:2765` 的 `setBackchannelHold` 调用点（方法定义在 `:1647`）
 - **时间**：2 分钟
 
 ### [ ] 5.2 hardBreak 真打断优先于让位

@@ -60,7 +60,7 @@ export interface TtsEngine {
 - 解析 `<\w+(?:\s+\d+ms)?>` → 按引擎映射替换为对应 SSML/停顿/emoji
 - 返回**纯字符串**（注意：Edge 引擎后续需走 `rawToFile`/`rawToStream` 路径而非 `_SSMLTemplate`，因为后者的 `<prosody>` 包裹破坏 `<mstts:express-as>` 嵌入）
 
-**`src/tts-queue.ts` Edge 引擎 (`src/tts-queue.ts:109` 的 `EdgeTtsEngine`)**：
+**`src/tts-queue.ts` Edge 引擎 (`src/tts-queue.ts:142` 的 `EdgeTtsEngine`)**：
 - 检测 `text` 是否包含 emotion 标签（已 stripped 时不含）
 - 不含：走原 `synthesize` 路径
 - 含：切换到 rawSSML 路径（用 **`MsEdgeTTS.rawToFile` 或 `rawToStream`**（按符号定位；2026-09-14 时点 L122/L132，安装版 2.1.0 时点实测 :136 `rawToFile` / :146 `rawToStream`）—— 仓库公开 API；私有 `_rawSSMLRequest` 不可直接调用）—— 无需 fork
@@ -76,7 +76,7 @@ export interface TtsEngine {
 - [ ] 未知标签按字面文本朗读
 - [ ] 三引擎跑通样例句 `"你好<laugh>今天天气真好"`：Kokoro 笑声 token、VITS emoji+停顿、Edge `<mstts:express-as style="cheerful">`
 - [ ] 现有 `ttsEngine: edge/vits/kokoro` 切换不影响其他字段
-- [ ] **不破坏现有不丢句不变量**：`tts-queue.ts:554-572` 重试（`MAX_SYNTH_ATTEMPTS = 3` :556）+ `:366`/`:455`/`:471`（epoch 自增：prune / cancel / re-enter）/`:490`（泵内守卫 break，另 :511 continue）不动（原写 `413-430`/`:296`/`:382`/`:416`/`:437` 全部已漂移 Δ57~Δ161，且 `:296`/`:382` 在 HEAD 无 epoch 自增语句、系幻影锚点；2026-10-21 按符号定位刷新）
+- [ ] **不破坏现有不丢句不变量**：`tts-queue.ts:593-611` 重试（`MAX_SYNTH_ATTEMPTS = 3` :595）+ `:366`/`:455`/`:471`（epoch 自增：prune / cancel / re-enter）/`:490`（泵内守卫 break，另 :550 continue）不动（原写 `413-430`/`:296`/`:382`/`:416`/`:437` 全部已漂移 Δ57~Δ161，且 `:296`/`:382` 在 HEAD 无 epoch 自增语句、系幻影锚点；2026-10-21 按符号定位刷新）
 
 ## 后果
 
@@ -132,7 +132,7 @@ export interface TtsEngine {
 
 4. **`<break N ms>` 语义落地** —— 段后置静音（EmotionSegment.preBreakMs 标在「break 之前的最后一段」上，语义 = 该段 PCM 合成完后插入的静音毫秒数）。sherpa-onnx 不支持 SSML 时段间停顿标签，落地通过 PCM 后处理实现（`src/tts-local.ts:519-523`（`preBreakMs`；原锚 476-481 已漂移））。
 
-5. **`<laugh>/<sigh>/<emphasis>` 剥离不读出** —— 在 `src/emotion.ts:33` `parseEmotionTags` 标签处理分支识别后丢弃（2026-10-20 收尾终检修正，原 :32 为文档注释收尾行），不进入段序列。LLM 端若需真实笑声/叹气/强调，等第二步 Edge `rawToFile/rawToStream` 路径（ADR-0007 落地顺序第 2 步，本批未实施）。
+5. **`<laugh>/<sigh>/<emphasis>` 剥离不读出** —— 在 `src/emotion.ts:54` `parseEmotionTags` 标签处理分支识别后丢弃（2026-10-20 收尾终检修正，原 :53 为文档注释收尾行），不进入段序列。LLM 端若需真实笑声/叹气/强调，等第二步 Edge `rawToFile/rawToStream` 路径（ADR-0007 落地顺序第 2 步，本批未实施）。
 
 **未实施的部分**（按 ADR-0007「落地顺序」第 2 步，留未来）：
 

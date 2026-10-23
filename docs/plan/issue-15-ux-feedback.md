@@ -18,50 +18,50 @@
 
 证据链（当前源码）：
 
-- `src/asr.ts:910`：播放期（playingNow）AEC 后帧**只进 detectChunks**（VAD 检测通道），不进识别 segment。
-- `src/asr.ts:985-997`：正常语音分支在 `config.isPlaying()` 为真时**不入段**（自聊防护），仅把播放前已开着的段立即收口（`finalizeSegment(true)`，其体内 asr.ts:678 置 `speechActive=false`——播放期用户语音因此永远不进段）。
-- `src/asr.ts:546`（`requestDetect`）：播放期且未开口时轮询只走 `requestDetect()`（检测通道），常规 partial 断流。
-- `src/client.tsx:2539`（`hardBreak`）：hardBreak = skipAudio + cancelTurn + POST /cancel（`keepAsr = engine.holding === true`）+ 非 hold 时 `discardSegment()`（:2473）。（**2026-10-21 按 HEAD `465c253` 重锚**：R15-G 的焦点归属实例级化在 `src/client.tsx` 增 +54 行，本行处位移 +51；旧值 2392 / 2422 为 `3154433` 口径）
+- `src/asr.ts:995`：播放期（playingNow）AEC 后帧**只进 detectChunks**（VAD 检测通道），不进识别 segment。
+- `src/asr.ts:1070-1082`：正常语音分支在 `config.isPlaying()` 为真时**不入段**（自聊防护），仅把播放前已开着的段立即收口（`finalizeSegment(true)`，其体内 asr.ts:714 置 `speechActive=false`——播放期用户语音因此永远不进段）。
+- `src/asr.ts:581`（`requestDetect`）：播放期且未开口时轮询只走 `requestDetect()`（检测通道），常规 partial 断流。
+- `src/client.tsx:2577`（`hardBreak`）：hardBreak = skipAudio + cancelTurn + POST /cancel（`keepAsr = engine.holding === true`）+ 非 hold 时 `discardSegment()`（:2511）。（**2026-10-21 按 HEAD `465c253` 重锚**：R15-G 的焦点归属实例级化在 `src/client.tsx` 增 +54 行，本行处位移 +51；旧值 2392 / 2422 为 `3154433` 口径）
 - `src/index.ts:1762`：host 收到 /cancel，`keepAsr !== true` 时 `asr.reset(sessionId)`（:1577；host 识别流清空，asr-host.ts:781-813 reset 函数内 resetGen++（:800）且连带释放检测 VAD（:802-812））。
-- `src/asr.ts:1399-1465`：discardSegment 清空本地段 + segmentEpoch++ + resetHostStream。
+- `src/asr.ts:1487-1554`：discardSegment 清空本地段 + segmentEpoch++ + resetHostStream。
 
-后果链：hardBreak 确认需 confirmFrames×100ms + 上行往返（真机 confirmMs ~490ms，CONTEXT.md:37/42），用户打断开口到打断生效之间说的全部语音只短暂存在于 detectChunks（上限 1s，`src/asr.ts:553` MAX_DETECT_PENDING，且被检测消费/弃段时清空）——既未进识别段、未上 host 流，hardBreak 后新段从零开始。**丢的正是「打断那句话」**，与用户报告「整段或丢开头、长段落尤其明显」完全吻合。
+后果链：hardBreak 确认需 confirmFrames×100ms + 上行往返（真机 confirmMs ~490ms，CONTEXT.md:37/42），用户打断开口到打断生效之间说的全部语音只短暂存在于 detectChunks（上限 1s，`src/asr.ts:588` MAX_DETECT_PENDING，且被检测消费/弃段时清空）——既未进识别段、未上 host 流，hardBreak 后新段从零开始。**丢的正是「打断那句话」**，与用户报告「整段或丢开头、长段落尤其明显」完全吻合。
 
 ### 问题②运行中排队 —— 用户诊断属实，且存在一等公民 API 解
 
-- 插件提交链路：`src/client.tsx:2251`（`submitDraftNow`）→ `actions?.submit()`（宿主 InputActions.submit，`src/client.tsx:1744` 注入面类型收窄：槽位只声明 `submit?` / `setDraft?`，丢弃含 `insertText` CAS 的其余面；消费点 `:1871 actionsRef = useRef(inputActions)`）。（**2026-10-21 按 HEAD `465c253` 重锚**：submitDraftNow 位移 +51；旧值 1825 指的是消费点 `actionsRef` 而非收窄处，本轮改为指向收窄的类型声明）
+- 插件提交链路：`src/client.tsx:2289`（`submitDraftNow`）→ `actions?.submit()`（宿主 InputActions.submit，`src/client.tsx:1746` 注入面类型收窄：槽位只声明 `submit?` / `setDraft?`，丢弃含 `insertText` CAS 的其余面；消费点 `:1871 actionsRef = useRef(inputActions)`）。（**2026-10-21 按 HEAD `465c253` 重锚**：submitDraftNow 位移 +51；旧值 1825 指的是消费点 `actionsRef` 而非收窄处，本轮改为指向收窄的类型声明）
 - 宿主契约（本机 dsh 0.2.0-rc.2 源码实证）：
   - `InputActions.submit(): void` **无参数**（dsh-client-ui-conversation `contract/input.d.ts:206-226`）——插件无法经它指定手势。
   - 宿主 `busyEnter` 设置（namespace `ui-conversation`，值 queue|steer，**默认 queue**「Default preserves Enter-as-Queue」，submission-settings.d.ts）由 `resolveSubmitMode(preferred, running, gesture, steeringAvailable)` 裁决；Cmd/Ctrl+Enter = accelerated 手势 = 直接 steer（best-effort，窗口关时降级为下一队列项）。
-  - **`SessionFace.prompt(content: PromptContentPart[], mode: 'queue'|'steer', …)`**（dsh-api-session-controller `contract/session.d.ts:82`：「'queue' appends a turn; 'steer' interrupts the running one」）经 `ctx.sessions.binding(sessionId).session` 可达——插件客户端**已在用同源 API**：`src/client.tsx:2716`（`onAecState` 回调注入面） cancelTurn 走 `ctx?.sessions?.binding?.(sessionId)?.session.cancel?.()`。
+  - **`SessionFace.prompt(content: PromptContentPart[], mode: 'queue'|'steer', …)`**（dsh-api-session-controller `contract/session.d.ts:82`：「'queue' appends a turn; 'steer' interrupts the running one」）经 `ctx.sessions.binding(sessionId).session` 可达——插件客户端**已在用同源 API**：`src/client.tsx:2754`（`onAecState` 回调注入面） cancelTurn 走 `ctx?.sessions?.binding?.(sessionId)?.session.cancel?.()`。
 - 结论：语音提交可绕过 InputActions.submit，运行中直接 `session.prompt([{type:'text',text}], 'steer')`；不可用（老宿主/无 binding）时回退现状 submit()。（取证后修正与深化见 §2.B：宿主 submit 硬编码 queue、steer 语义与版本矩阵实证、A/B 案取舍。）
 
 ### 问题③partial 不回填 —— 根因确认，方案面清晰
 
-- `src/client.tsx:2780`（`actionsRef.current?.setDraft?.`）→ `engine.onPartial((text) => bus.setUi({ partial: text }))`——partial 只进状态条/字幕。
-- `src/client.tsx:1956`（`actionsRef = useRef(inputActions)`）→ 草稿仅在 onSegment（定稿）时 `setDraft(committed + ' ' + trimmed)` 追加写入。
+- `src/client.tsx:2818`（`actionsRef.current?.setDraft?.`）→ `engine.onPartial((text) => bus.setUi({ partial: text }))`——partial 只进状态条/字幕。
+- `src/client.tsx:1958`（`actionsRef = useRef(inputActions)`）→ 草稿仅在 onSegment（定稿）时 `setDraft(committed + ' ' + trimmed)` 追加写入。
 - 宿主 `setDraft(text)` 是**整篇替换**纯文本（input.d.ts:217），无富样式——用户要的「未定稿部分差异样式」在 composer 纯文本面不可达，计划按「partial 实时进草稿（纯文本追加预览）、定稿替换为该段定稿文本」实现，样式诉求记为 Open Question。
-- 与「累积发送」语义的兼容：草稿 = 已定稿段 + 当前 partial；需把 committed 与 live 分离维护，避免 onSegment 追加逻辑把 partial 重复计入（主会话已定位 double-append 风险点：原 client.tsx:1870 一带 `curText ? curText + ' ' + trimmed : trimmed` 追加式写法〔**历史时点锚点，按 STATE 锚点纪律保留不改**〕；批 3 已修——现由 `src/draft-compose.ts` `composeDraft` 纯函数承担 committed/live 分离，onSegment 走「替换尾部」见 client.tsx:2751）。
+- 与「累积发送」语义的兼容：草稿 = 已定稿段 + 当前 partial；需把 committed 与 live 分离维护，避免 onSegment 追加逻辑把 partial 重复计入（主会话已定位 double-append 风险点：原 client.tsx:1872 一带 `curText ? curText + ' ' + trimmed : trimmed` 追加式写法〔**历史时点锚点，按 STATE 锚点纪律保留不改**〕；批 3 已修——现由 `src/draft-compose.ts` `composeDraft` 纯函数承担 committed/live 分离，onSegment 走「替换尾部」见 client.tsx:2789）。
 
 ### 问题④识别慢 —— 部分基线已存在，缺口待代理取证合并
 
-- 定稿链：asr.ts:550-687 finalizeSegment（3 次有界重试、10s 超时）→ host asr-host.ts SenseVoice 整句重转（模型 int8 ~228MB）。
-- `src/client.tsx:3918-3922`：定稿期状态条已有「识别中」（`transcribing` → `t('recognizing')`；原锚 2513-2530 已漂移）——用户「显示定稿中进度」诉求部分已覆盖，缺的是**耗时可见性**（elapsed）与快速模式（待代理取证）。
+- 定稿链：asr.ts:585-723 finalizeSegment（3 次有界重试、10s 超时）→ host asr-host.ts SenseVoice 整句重转（模型 int8 ~228MB）。
+- `src/client.tsx:3956-3960`：定稿期状态条已有「识别中」（`transcribing` → `t('recognizing')`；原锚 2513-2530 已漂移）——用户「显示定稿中进度」诉求部分已覆盖，缺的是**耗时可见性**（elapsed）与快速模式（待代理取证）。
 - 用户建议的「先用流式结果立即发送、后台校正后替换」需要宿主支持编辑已发送 user message——主会话预判宿主无此 API（QueueAction 仅对待入队项生效，contract/session.d.ts:95-97），预计降级为「快速/准确模式开关」。
 
 ## 2. 代理取证结论（5 路并行，回报后合并+对抗校验）
 
 ### 2.A 打断与全双工（代理 A，已与主会话一手核实互证 ✓）
 
-用户诊断属实且比其描述更彻底。补充：host reset 连带释放检测 VAD（asr-host.ts:723-733）；播放期 prePad 对语音帧不积累（asr.ts:972-975）；hardBreak 同步段无帧插入窗口。
+用户诊断属实且比其描述更彻底。补充：host reset 连带释放检测 VAD（asr-host.ts:723-733）；播放期 prePad 对语音帧不积累（asr.ts:1057-1060）；hardBreak 同步段无帧插入窗口。
 
-**补充根因 1（对抗性新发现，待行为级证据）**：backchannel 软让位在 toggle+播放期是**结构性死路径**——matchBackchannel 只在 requestPartial 内执行（asr.ts:486-494），播放期轮询只走 requestDetect（asr.ts:1061-1066），requestPartial 需 speechActive||holdActive||wake（asr.ts:1067-1071），播放期 speechActive 首帧即被释放（asr.ts:992→678）；且 detect 通道响应只有 isSpeech 无文本——播放期根本没有文本可匹配。ADR-0008 Phase 1 #1 意图在 toggle 配置下未达成；test/backchannel.test.mjs 无端到端覆盖。hold 模式下该路径活着。
+**补充根因 1（对抗性新发现，待行为级证据）**：backchannel 软让位在 toggle+播放期是**结构性死路径**——matchBackchannel 只在 requestPartial 内执行（asr.ts:521-529），播放期轮询只走 requestDetect（asr.ts:1146-1151），requestPartial 需 speechActive||holdActive||wake（asr.ts:1152-1156），播放期 speechActive 首帧即被释放（asr.ts:1077→678）；且 detect 通道响应只有 isSpeech 无文本——播放期根本没有文本可匹配。ADR-0008 Phase 1 #1 意图在 toggle 配置下未达成；test/backchannel.test.mjs 无端到端覆盖。hold 模式下该路径活着。
 
 **补充根因 2**：2026-09-02 文档修的「return 饿死检测通道」只修了检测可达性；被缓冲的音频从未用于识别——正是今天吃句的历史欠账。
 
 **设计结论（代理推荐，主会话认可）**：选项 A = asr.ts 独立墙钟 preRoll 环（1-3s 可配）+ hardBreak 后 absorbPreRoll(onset-250ms) 并入新段 + 设置项，**host 零改动**。
-- 挂载点 asr.ts:841（`data = echo.process(data, ref)` 产出 AEC 后 data，与 asr.ts:900-901 `detectChunks.push(data)` 同一帧处理链）；并入时机在 discardSegment 完成后（segmentEpoch 已++、uploadedSamples=0、resetGate 已排队），新段对双清场后的空 host 流从 offset=0 全量上行，host 按 fed 去重（asr-host.ts:514-518）天然兼容——issue #10 的 epoch/resetGate 机制零改动、不毒化（I5 安全）。
-- **并入起点取语音起始时刻再前扣 ~250ms**（而非环起点）：天然跳过 AI 尾音段，防回声残响被转写。起始时刻由引擎侧从自身 detect 响应的 isSpeech 前沿自跟踪（asr.ts:559-561 是同一信号源，不依赖 client 的 interruptFirstAt），墙钟索引环可复用 client.tsx:743-796 refChunks/refStartWall 现成模式（声明 :743/:745，seek 基准赋值 :770/:783）。
+- 挂载点 asr.ts:921（`data = echo.process(data, ref)` 产出 AEC 后 data，与 asr.ts:985-986 `detectChunks.push(data)` 同一帧处理链）；并入时机在 discardSegment 完成后（segmentEpoch 已++、uploadedSamples=0、resetGate 已排队），新段对双清场后的空 host 流从 offset=0 全量上行，host 按 fed 去重（asr-host.ts:514-518）天然兼容——issue #10 的 epoch/resetGate 机制零改动、不毒化（I5 安全）。
+- **并入起点取语音起始时刻再前扣 ~250ms**（而非环起点）：天然跳过 AI 尾音段，防回声残响被转写。起始时刻由引擎侧从自身 detect 响应的 isSpeech 前沿自跟踪（asr.ts:594-596 是同一信号源，不依赖 client 的 interruptFirstAt），墙钟索引环可复用 client.tsx:747-798 refChunks/refStartWall 现成模式（声明 :745/:745，seek 基准赋值 :772/:785）。
 - 问题⑥真全双工（播放期持续识别）与自聊防护不变量正面冲突，代理建议降级为后续 ADR，本期不做——本期以预录并入交付「打断后无缝接上」的用户价值。
 - I10 抉择：bargeInPreRollMs 默认 0（严格守恒）vs 默认 ~1200ms（修默认体验，需 ADR 豁免，backchannelYield 先例）——**主会话裁决：默认 ~1200ms 开救益**（本 issue 存在的原因就是默认体验破损，保守默认等于不修；ADR-0012 记录豁免）。
 - 台架：test/wake-flow.test.mjs 可扩展，需装置（vadOnly 响应可编程 / 手写 hardBreak 序列 / 断言打断前内容进定稿——**执行规格以 §3 批 1 行「装置×4」清单为准**）——先拿红再修。
@@ -69,26 +69,26 @@
 ### 2.B 提交排队（代理 B 回报 + 主会话一手核实，双向互证 ✓）
 
 - **用户诊断部分正确，真相更硬**：宿主给插件槽位的 `InputActions.submit()` **不接受 mode 参数且实现里硬编码 `this.submit("queue")`**（dsh-client-ui-conversation client.js:13481-13483，0.2.1-rc.2 同构）——**语音提交恒为 queue，与宿主 busyEnter 设置无关**；busyEnter 只作用于键盘 Enter（client.js:16839）与发送按钮（client.js:17407）经 resolveSubmitMode 裁决。用户即使改宿主设置也没用——这正是「busyEnter 改了似乎没生效」的真相。
-- **完整调用链**：onSegment → setDraft（client.tsx:2751）→ submitDraftNow（client.tsx:2158）→ `actionsRef.submit()` 无参 → 宿主 SessionInputShell.submit("queue") → sendSession(mode='queue') → session.prompt(content,'queue') → agent.followup → next-turn 排队。500ms×3 重试在草稿被清/phase 变 submitting 时停止——**重试机制无问题，不是病因**。
+- **完整调用链**：onSegment → setDraft（client.tsx:2789）→ submitDraftNow（client.tsx:2196）→ `actionsRef.submit()` 无参 → 宿主 SessionInputShell.submit("queue") → sendSession(mode='queue') → session.prompt(content,'queue') → agent.followup → next-turn 排队。500ms×3 重试在草稿被清/phase 变 submitting 时停止——**重试机制无问题，不是病因**。
 - **steer 语义实证**：SessionFace.prompt(content, 'queue'|'steer')（contract/session.d.ts:82）→ host commands.js:327-329：steer→agent.steer / 否则 followup。steer = inbox next-step + wake（agent-loop index.js:809-814），在**下一个 step 边界**被消费（index.js:998-1006），不中断当前工具调用；claim() 总先吃 next-step（index.js:103-111）→ **窗口关闭时天然降级为「下一条消息」，无硬失败**（严格路径 updateQueue 才抛 steer-unavailable，commands.js:435-436）。
 - **版本兼容（npm 实拉实证）**：dsh-agent@0.1.1-rc.2 已有 steer(message)（runtime-types.d.ts:117-123「Submit steering for the nearest step」）；session-controller@0.1.2-rc.1 的 SessionFace.prompt 已带 queue|steer 签名（session.d.ts:81）；0.1.1-rc.2 客户端 prompt 的 mode 参数**待核**（子包未发布 npm 无法实拉类型；compat-contract.md:174 记录 0.1.1 线 RPC 已带 mode 字段）→ 运行时探测 + 回退兜底。
-- **插件前置条件齐备**：cancelTurn 已用同源 `ctx?.sessions?.binding?.(sid)?.session.cancel?.()`（client.tsx:1346-1353）；runningRef 已存在（client.tsx:1473 `useRef` + 同文件 `useSession(s=>s.running)` 订阅）；ctx 宽松类型 + 可选链模式（client.tsx:656 `ctx?: any`）。
+- **插件前置条件齐备**：cancelTurn 已用同源 `ctx?.sessions?.binding?.(sid)?.session.cancel?.()`（client.tsx:1348-1355）；runningRef 已存在（client.tsx:1475 `useRef` + 同文件 `useSession(s=>s.running)` 订阅）；ctx 宽松类型 + 可选链模式（client.tsx:658 `ctx?: any`）。
 - **设计（批 2，代理推荐 A、主会话采纳）**：submitDraftNow 内分流——running && 草稿不以 '/' 开头（避命令 adjudication 旁路）→ 先试 `session.prompt([{type:'text',text}],'steer')`，RemoteResult.ok → setDraft('') 清草稿并**跳过重试、不得再走 actions.submit()（防双发）**；失败/异常/无 binding/不可续子代理会话 → 回退现状 submit() queue 路径（不劣于现状）。约 20 行、单函数改动。
 - **设置项取舍（交审查裁决）**：代理推荐 A（无新设置，steer 语义与语音直觉一致：用户说话时就是想让 AI 尽快听到）；B（新增「运行中发送方式」设置）作为可选增强——用户原话是「默认 steer，**或**给个设置」，二者是替代关系。**主会话暂定 A**（ponytail 最小），审查若判需要逃逸口再升级 B。
 - **待核**：① 0.1.1-rc.2 客户端 prompt mode 参数（运行时探测兜底）；② steer 直发不走 beginSubmission，消息回显节奏与输入框发送的观感差异（无害，实测）；③ 不可续子代理会话（steeringAvailable=false）下 prompt('steer') 行为（回退路径覆盖）。
 
 ### 2.C 转写体验（代理 C，已与主会话一手核实互证 ✓）
 
-**问题③**：根因属实。partial 唯一消费处 client.tsx:2696（asr.ts:479 emit，100ms 节拍）；草稿唯一入口 onSegment（client.tsx:2736，替换尾部的 composeDraft 调用在 client.tsx:2751）。修复 = 客户端单侧小改：draft = 已定稿前缀 + partial 未定稿尾，onSegment 时替换尾部。三个硬约束：① wake 待机 partial 含唤醒词且是诊断反馈（asr.ts:448-469）**不得写草稿**，需 state 门控；② 打字即退出（client.tsx:2549-2556），程序化 setDraft 不派发 input 事件无回环；③ 累积发送语义不变。宿主 slot 实际传完整 InputActions（含 insertText CAS），插件把类型收窄了（client.tsx:1657）可放宽。按句分段可复用 segmenter.ts:52。
+**问题③**：根因属实。partial 唯一消费处 client.tsx:2734（asr.ts:514 emit，100ms 节拍）；草稿唯一入口 onSegment（client.tsx:2774，替换尾部的 composeDraft 调用在 client.tsx:2789）。修复 = 客户端单侧小改：draft = 已定稿前缀 + partial 未定稿尾，onSegment 时替换尾部。三个硬约束：① wake 待机 partial 含唤醒词且是诊断反馈（asr.ts:483-504）**不得写草稿**，需 state 门控；② 打字即退出（client.tsx:2587-2594），程序化 setDraft 不派发 input 事件无回环；③ 累积发送语义不变。宿主 slot 实际传完整 InputActions（含 insertText CAS），插件把类型收窄了（client.tsx:1659）可放宽。按句分段可复用 segmenter.ts:52。
 
-**问题④**：延迟链 = 端点静音 silenceMs（默认 1500，asr-host.ts:340）+ 确认窗 200~800ms（CONFIRM_MIN=200/CONJUNCTION=800，asr-host.ts:177-191）+ finalize = max(zipformer 尾垫 flush, SenseVoice 整段重译) race 上限 20s（race 定义 asr-host.ts:598-607，zipformer 定稿与结果合并 asr-host.ts:609-621）+ 定稿进草稿后再静默一个 silenceMs 才发（client.tsx:1847）→ 合计 5~23s，与用户报的 10-20s 吻合。**客户端 final fetch 10s 超时（asr.ts:693）< host 20s，慢定稿必触发一次重试经 host inflight 守卫等同一 promise**（asr-host.ts:575-577）。
+**问题④**：延迟链 = 端点静音 silenceMs（默认 1500，asr-host.ts:340）+ 确认窗 200~800ms（CONFIRM_MIN=200/CONJUNCTION=800，asr-host.ts:177-191）+ finalize = max(zipformer 尾垫 flush, SenseVoice 整段重译) race 上限 20s（race 定义 asr-host.ts:598-607，zipformer 定稿与结果合并 asr-host.ts:609-621）+ 定稿进草稿后再静默一个 silenceMs 才发（client.tsx:1849）→ 合计 5~23s，与用户报的 10-20s 吻合。**客户端 final fetch 10s 超时（asr.ts:729）< host 20s，慢定稿必触发一次重试经 host inflight 守卫等同一 promise**（asr-host.ts:575-577）。
 - 乐观发送（发后替换已发消息）**不可行**：dsh-agent / dsh-api-session-controller / dsh-client-ui-conversation 全文检索无 editMessage/updateMessage/replaceMessage。降级路径：乐观草稿（finalize 两段下发：zipformer 先行、SSE 推 sense 校正、草稿层替换未定稿尾）触及 asr-host/asr/client 三处 = 架构级单独批次。更轻替代：host 自适应跳过 sense（长段/上次解码慢则本段用 zipformer）。
-- senseVoice 关 = 现成快速模式（定稿段降到亚秒）；「识别中…」状态条已有（client.tsx:2647 / :3008-3009 耗时递增），加耗时是 UI 小改。
+- senseVoice 关 = 现成快速模式（定稿段降到亚秒）；「识别中…」状态条已有（client.tsx:2685 / :3046-3047-3009 耗时递增），加耗时是 UI 小改。
 
 **问题⑤**：LLM 纠错**宿主 API 可行**：cordis `ctx.llm.stream({provider, messages, system})`（dsh-llm），模型路由 `ctx.agentDefaultModel.currentSelection()`；避自 tap：纠错调用不传 sessionId（index.ts:906-910 的 tap 只拦本会话无 purpose 流）。**ctx.llm 运行时可用性未经 PoC = 待核**。
 - 推荐插入点：**不在 finalize 链内**（每句多 0.5-3s RTT），而在 scheduleAutoSend 到点后、submitDraftNow 前，新 host 路由 /correct 对整条累积草稿纠错一次（每消息一次 RTT）；失败/超时回退原文，纯附加层。开关照搬既有模式（schema+默认+strings+form+/config 透传）。~~热词：sherpa transducer 理论支持 hotwordsFile（asr-host.ts:276-288），WASM 支持 = 待核~~（**已作废**：热词词表偏置随批 7M 🔴 砍 2/4 连字段带模块删除，asr-host.ts 已无 hotword 代码，2026-10-20 核）。autoSend=false 时草稿天然可见可改，无需新架构。
 
-**问题⑦**：两难根源 = **一个 silenceMs 管三件事**（端点 VAD asr-host.ts:340 + 客户端兜底 asr.ts:1027 + 自动发送延迟 client.tsx:1847）。最小修复：解耦端点与发送延迟（发送延迟固定 ≥1200ms 或新增 sendDelayMs）；轻量语义断句：endpointConfirmMs 加「无终止标点升档」启发式（纯函数可测）。真语义断句（LLM 判句）= 架构级不值得。
+**问题⑦**：两难根源 = **一个 silenceMs 管三件事**（端点 VAD asr-host.ts:340 + 客户端兜底 asr.ts:1112 + 自动发送延迟 client.tsx:1849）。最小修复：解耦端点与发送延迟（发送延迟固定 ≥1200ms 或新增 sendDelayMs）；轻量语义断句：endpointConfirmMs 加「无终止标点升档」启发式（纯函数可测）。真语义断句（LLM 判句）= 架构级不值得。
 
 **测试缺口**：客户端草稿/autosend 无单测（仅浏览器 e2e）。新装置：③ 复用 wake-flow 假浏览器+假 host+假 InputActions；④ 假 SenseWorkerClient 延迟注入；⑤ /correct 路由假 ctx.llm 单测；⑦ endpointConfirmMs 纯函数 + silenceMs 矩阵 e2e。
 
@@ -99,7 +99,7 @@
 - busyEnter/steer 插件侧 grep 0 命中——纯宿主设置，插件读不到也改不了。**但批次 2 的 steer 直提交方案使语音通道不再依赖该宿主设置**，文案引导降级为附属动作。
 - 外部设置文件运行期无 watch（只在 apply 启动读一次，index.ts:824）——用户手改 JSON 必须重启 dsh 或重进语音模式。
 
-**丢句路径清单（17 条，代理逐条列 file:line）**：已有可见反馈 = finalize 重试耗尽（recognitionFail 状态条）/ TTS 跳句与引擎失败（tts-skip+toast）/ 模型下载失败。仍静默 = partial 上行失败（asr.ts:442/505 partialFailStreak≥3 才提示，瞬时失败不打扰）/ detect 通道失败（asr.ts:572 detectFailStreak≥3 才提示）/ host finalize 异常返回空（asr-host.ts:643-649 catch 返回空）/ SenseVoice 降级（asr-host.ts:443-461）/ VAD 模型下载失败 / TTS 队列溢出 / SSE 断连（client.tsx:944 error 监听）。设计性静默（自聊防护/manual 丢帧/迟到响应作废）不算缺陷。
+**丢句路径清单（17 条，代理逐条列 file:line）**：已有可见反馈 = finalize 重试耗尽（recognitionFail 状态条）/ TTS 跳句与引擎失败（tts-skip+toast）/ 模型下载失败。仍静默 = partial 上行失败（asr.ts:477/505 partialFailStreak≥3 才提示，瞬时失败不打扰）/ detect 通道失败（asr.ts:607 detectFailStreak≥3 才提示）/ host finalize 异常返回空（asr-host.ts:643-649 catch 返回空）/ SenseVoice 降级（asr-host.ts:443-461）/ VAD 模型下载失败 / TTS 队列溢出 / SSE 断连（client.tsx:946 error 监听）。设计性静默（自聊防护/manual 丢帧/迟到响应作废）不算缺陷。
 
 **可观测性**：host 仅 console.warn 无 ring buffer 无导出；客户端 telemetry 仅 localStorage 开关下采集、存内存、无导出无持久化。
 
@@ -112,7 +112,7 @@
 **仍缺失**：
 1. **桌面端（Electron）冒烟未覆盖 0.2.1-rc.2 / alpha.5**：smoke-desktop-shell.mjs 仅在 0.1.6-alpha.2 / 0.1.7-rc.2 / 0.2.0-rc.2 / 0.2.1-alpha.1 实测过（compat-contract.md:464）——0.2.1-rc.2 桌面端形态目前是**推断兼容**（server 四层实证 + 旧版桌面实证 + alpha.1 桌面实证），缺一环。
 2. 桌面端冒烟不在 CI 矩阵（smoke-runtime.sh:190-198 仅 DSHVM_ELECTRON env 触发；verify-dual 不含桌面步）。
-3. **「UI 进入 recovery」机制不存在**：grep 全 src/ 无 recovery 逻辑；历史上唯一整体失败模式是 0.1.7 settingsScope inject 事故，已修（client.tsx:43 inject=['slots','sessions']，settingsScope 改 ctx.get 可选查找 client.tsx:405-407）。「部分降级」机制也不存在——设置双路径是功能等价 shim 不是降级开关。
+3. **「UI 进入 recovery」机制不存在**：grep 全 src/ 无 recovery 逻辑；历史上唯一整体失败模式是 0.1.7 settingsScope inject 事故，已修（client.tsx:45 inject=['slots','sessions']，settingsScope 改 ctx.get 可选查找 client.tsx:407-409）。「部分降级」机制也不存在——设置双路径是功能等价 shim 不是降级开关。
 
 **用户困惑根源**：v0.7.24 的 description 写「verified → 0.2.1-alpha.3」（git show v0.7.24 实证），用户在桌面端 rc.2 上装 0.7.24 时 npm 页面显示标称范围只到 alpha.3 → 「未声明兼容」错觉。v0.7.25 已改 description（npm 传播约 4 分钟）。
 
@@ -124,10 +124,10 @@
 
 | 批 | 问题 | 内容 | 主要文件 | 依赖 |
 |---|---|---|---|---|
-| 1 | ①⑥ | preRoll 环（**固定 PRE_ROLL_MS=2000 常量**）+ hardBreak 时 absorbPreRoll 并入新段 + **bargeInSalvage 布尔设置（默认 true，I10 豁免已落盘 `docs/adr/0012-barge-in-salvage.md`）**+ wake-flow 台架用例×8（先红后修）。**设计约束（审查 R3+复审+引擎审查）**：① absorb 在 discardSegment 内同步完成（clear→seed 同函数、reset 走 fire-and-forget 入 resetGate——seed 前 segment 保持空 → 无 partial 插入窗口；requestPartial 本就 await resetGate，reset 先于首次上行落地）；② onset 锚定 **detect 请求体起点（reqBodyStart=sentAt−请求体音频时长，asr.ts:541）-250ms**，不用响应到达时刻、也不用 sentAt 本身（帧级 VAD 语义：首真请求的上一窗全 false ⇒ 语音起点 ≥ 请求体起点 ⇒ 锚体起点永不切句首；sentAt 在劣化 cadence 下滞后语音起点多达一个窗长会切——引擎审查实证）；③ **salvage 段回归守卫（复审 Important#1 修订口径）**：salvage 段定稿文本整段命中 backchannel 词表（复用 matchBackchannel，≤4 规范字符）→ **engine 侧弃段：不 emit onSegment、不写草稿、不触发 autoSend/force，语义等同短噪声弃段**（不是「跳过 submit」——累积草稿语义下只跳 submit 会让「嗯」留草稿并随后续定稿段的 autoSend 发出，正是要防的回归；hook 点=finalizeSegment 内 emit 前，engine 自带 salvage 段标记，client 零改动）；④ **跨播放窗重整（引擎审查 B1）**：播放入口（上升沿）同步清环+种子——否则「AI 播完→用户口述→AI 再开播→打断」常见流程中 seek 墙钟跨窗错位一个播放间隙 → 抢救静默失效（回退 issue 原症状），backchannel 让位恢复播放后（gap≈1.5s）反向切句首；⑤ **wake 下抢救段同步置 speech（引擎审查 I1）**：reset 窗口内 state 若仍 'wake'，静音处理器会在 reset 往返 > silenceMs 时 clearWakeSegment 抹掉抢救段；⑥ 回声毒化最坏情况（耳机残差>语音，CONTEXT.md:43）以 bargeInSalvage 逃生口+真机验收兜底。**wake 交互**：打断=用户已 engaged，salvage 段直接进 'speech' 态（隐式唤醒——唤醒词门只辖空闲→聆听，不辖播放期已 engaged 的打断；定稿沿用 stripWakePrefix 防词头泄漏）；speechMs 按抢救音频时长计入 MIN_SPEECH_MS 门。**backchannel 死路径本体**仅 ADR-0008 注记+backlog，不做让位功能。**主要文件**：asr.ts / client.tsx（boot/fetchConfig/engine 透传三站）/ index.ts（interface+默认+DESC+zod×2+desc 注册六站）/ **settings-form.tsx（显式 Row+checkbox，非数据驱动，复审 Important#2）** / strings.ts（label+desc zh/en 四处）/ test | 无 |
+| 1 | ①⑥ | preRoll 环（**固定 PRE_ROLL_MS=2000 常量**）+ hardBreak 时 absorbPreRoll 并入新段 + **bargeInSalvage 布尔设置（默认 true，I10 豁免已落盘 `docs/adr/0012-barge-in-salvage.md`）**+ wake-flow 台架用例×8（先红后修）。**设计约束（审查 R3+复审+引擎审查）**：① absorb 在 discardSegment 内同步完成（clear→seed 同函数、reset 走 fire-and-forget 入 resetGate——seed 前 segment 保持空 → 无 partial 插入窗口；requestPartial 本就 await resetGate，reset 先于首次上行落地）；② onset 锚定 **detect 请求体起点（reqBodyStart=sentAt−请求体音频时长，asr.ts:576）-250ms**，不用响应到达时刻、也不用 sentAt 本身（帧级 VAD 语义：首真请求的上一窗全 false ⇒ 语音起点 ≥ 请求体起点 ⇒ 锚体起点永不切句首；sentAt 在劣化 cadence 下滞后语音起点多达一个窗长会切——引擎审查实证）；③ **salvage 段回归守卫（复审 Important#1 修订口径）**：salvage 段定稿文本整段命中 backchannel 词表（复用 matchBackchannel，≤4 规范字符）→ **engine 侧弃段：不 emit onSegment、不写草稿、不触发 autoSend/force，语义等同短噪声弃段**（不是「跳过 submit」——累积草稿语义下只跳 submit 会让「嗯」留草稿并随后续定稿段的 autoSend 发出，正是要防的回归；hook 点=finalizeSegment 内 emit 前，engine 自带 salvage 段标记，client 零改动）；④ **跨播放窗重整（引擎审查 B1）**：播放入口（上升沿）同步清环+种子——否则「AI 播完→用户口述→AI 再开播→打断」常见流程中 seek 墙钟跨窗错位一个播放间隙 → 抢救静默失效（回退 issue 原症状），backchannel 让位恢复播放后（gap≈1.5s）反向切句首；⑤ **wake 下抢救段同步置 speech（引擎审查 I1）**：reset 窗口内 state 若仍 'wake'，静音处理器会在 reset 往返 > silenceMs 时 clearWakeSegment 抹掉抢救段；⑥ 回声毒化最坏情况（耳机残差>语音，CONTEXT.md:43）以 bargeInSalvage 逃生口+真机验收兜底。**wake 交互**：打断=用户已 engaged，salvage 段直接进 'speech' 态（隐式唤醒——唤醒词门只辖空闲→聆听，不辖播放期已 engaged 的打断；定稿沿用 stripWakePrefix 防词头泄漏）；speechMs 按抢救音频时长计入 MIN_SPEECH_MS 门。**backchannel 死路径本体**仅 ADR-0008 注记+backlog，不做让位功能。**主要文件**：asr.ts / client.tsx（boot/fetchConfig/engine 透传三站）/ index.ts（interface+默认+DESC+zod×2+desc 注册六站）/ **settings-form.tsx（显式 Row+checkbox，非数据驱动，复审 Important#2）** / strings.ts（label+desc zh/en 四处）/ test | 无 |
 | 2 | ② | 运行中 steer 直提交（A 案）：submitDraftNow 单点分流——running && 草稿不以 '/' 开头 → try `session.prompt([{type:'text',text}],'steer')`，**仅 RemoteResult.ok===true 才 setDraft('')+跳过重试+不再走 submit()；任何失败（抛错/ok:false/无 binding/函数缺失）统一回退现状 submit()**（队列路径自带 3 重试+草稿保留，无丢草稿风险）；**不新增设置**（审查 OQ2 裁决：queue 偏好是假想用户）。**四态单测**：steer ok（清草稿不发 submit）/ prompt reject（回退且草稿保留）/ 无 binding（回退）/ 抛错（回退）。**老宿主降级单一路径**（审查 I-6：原「忽略实参退化 queue」与「回退 submit」并存矛盾，统一为 try/catch+ok+回退）；待核 #4 扩展到 running 行为×两端 PoC | client.tsx / test | 无 |
 | 3 | ③ | partial 实时回填草稿：committed/live 分离 + wake 态门控 + onSegment 替换尾部。**已知边界**：① 段被弃（短噪声/打断）时 live 尾短暂陈旧——下一次 partial/定稿替换（I-1 修复后 partial 即取消 autoSend，更不会发出半成品）；② 手动发送（Enter/点击，autoSend=false 或用户主动）时段未定稿时草稿含可见 live partial——用户可控（审查 M-1）；③ 宿主纯文本面，「差异样式」不可达（Open Question）；④ onSegment 不在在途窗口保护内——定稿若落在「宿主清草稿已发起、重渲染未落地」同窗口会把已提交文本拼回草稿（steer 路径窗口是真实 RTT 但要塞进一次完整定稿实际不可达，登记不改码）；⑤ submitDraftNow 两早退（无 submit 槽/空草稿）后回填暂停到下次定稿（语义正确）。**批 3 审查修复（I-1/I-2）**：wake 续段 partial 即 cancelAutoSend（防半成品外发+命令重复）；submitInFlightRef 提交在途窗口内 onPartial 不回写（防已提交文本写回且 steer 守卫跳过清草稿） | client.tsx / test（假 InputActions） | 无 |
-| 4 | ④⑤ | 快速/准确模式语义化（senseVoice 开关文案 + 定稿耗时显示）+ **client final fetch 超时 10s→25s 对齐 host 20s race 上限**（asr.ts:701 vs asr-host.ts:598-607 错配，慢定稿必触发一次空转重试，一行级）；LLM 纠错 /correct 路由 + **llmCorrect 布尔设置（默认关——默认开=未申报的 I10 豁免+每条多一次 RTT/token）** + 发送前整条一次 + 失败回退原文（ctx.llm PoC 先行，不过则砍纠错只留④）。**已砍：host sense 自适应跳过**（审查 R2 Important#1：未测量先验的臆测启发式，触 finalize 链 I1 面；senseVoice=off 已是现成快速模式，真机观测后再议） | asr-host.ts / index.ts / client.tsx / strings.ts / test | 批 3 之后（同走提交前链，避免与草稿改写互相覆盖） |
+| 4 | ④⑤ | 快速/准确模式语义化（senseVoice 开关文案 + 定稿耗时显示）+ **client final fetch 超时 10s→25s 对齐 host 20s race 上限**（asr.ts:750 vs asr-host.ts:598-607 错配，慢定稿必触发一次空转重试，一行级）；LLM 纠错 /correct 路由 + **llmCorrect 布尔设置（默认关——默认开=未申报的 I10 豁免+每条多一次 RTT/token）** + 发送前整条一次 + 失败回退原文（ctx.llm PoC 先行，不过则砍纠错只留④）。**已砍：host sense 自适应跳过**（审查 R2 Important#1：未测量先验的臆测启发式，触 finalize 链 I1 面；senseVoice=off 已是现成快速模式，真机观测后再议） | asr-host.ts / index.ts / client.tsx / strings.ts / test | 批 3 之后（同走提交前链，避免与草稿改写互相覆盖） |
 | 5 | ⑦ | **发送延迟与 silenceMs 解耦：固定 SEND_DELAY_MS=1200 常量**（autoSend 计时器改用常量，silenceMs 回归纯端点语义=用户调它只影响断句不再影响发送——问题⑦根治）。**已砍：endpointConfirmMs 无标点升档启发式**（审查 R2 Important#3：臆测灵活性无真机阈值证据）；**不新增 sendDelayMs 设置**（审查 OQ3：常量即可，省一套 schema/form/strings/fetchConfig 管线；默认发送延迟 1500→1200 差 300ms 在 commit 显式申报，真机验收覆盖） | client.tsx / asr.ts / test | 无 |
 | 6 | ⑧ | settingsEffectiveNote 文案修正（actively misleading 必修：按 §2.D 实测语义分组如实描述）+ 设置卡片显示当前生效值 + README 设置入口引导（Settings → 语音模式，全版本固定存在）。**已删：silenceMs 真热生效子项**（审查 R2 Important#4：批 5 解耦后 silenceMs 只剩端点语义，host VAD 段级本就下一段生效，客户端兜底计时占比极低——伪需求；文案如实说明即可） | strings.ts / settings-form.tsx / README | 无 |
 | 7 | ⑨ | 关键静默路径状态条提示（partial 失败/detect 失败——连败 3 次才提示，可自愈的瞬时失败不噪）+ 复制诊断按钮（汇总只含构建版本/运行状态/设置快照/阶段耗时——**隐私口径：不含任何转写原文**）+ SSE 断连指示（error 置位/open 清除）。**计划收窄登记（审查 I3）**：finalize 空返回/VAD 模型下载失败/SenseVoice 降级/TTS 队列溢出四条路径**本期不做**——前两条已有兜底反馈（finalize 重试耗尽→recognitionFail 状态条；VAD 缺失→host 端点静音兜底路径），后两条超出状态条提示的最小面；剩余静默面在收口批 issue 回复中如实交代 | client.tsx / strings.ts / asr.ts / test | 无 |
@@ -141,7 +141,7 @@
 | 不变量 | 涉及批 | 判断 |
 |---|---|---|
 | I1 finalize 不丢句 | 1/4 | 批 1 并入段走正常 finalize 幂等链，不碰；批 4 只改 client final fetch 超时（10s→25s，对齐 host 20s race 上限）与新增 /correct 附加路由，不碰定稿链本体 |
-| I2 计数仅播放期 | 1 | preRoll.push 与 detectChunks.push（asr.ts:900-915）同区域同条件（handleAudio 轮询块前，playingNow && !holdActive && mode!=='hold'），不动计数逻辑 |
+| I2 计数仅播放期 | 1 | preRoll.push 与 detectChunks.push（asr.ts:985-1000）同区域同条件（handleAudio 轮询块前，playingNow && !holdActive && mode!=='hold'），不动计数逻辑 |
 | I3 播放门不 return | 1/3 | 不在 handleAudio 门分支加 return |
 | I4/I5 tts-queue/epoch | 1 | 并入在 segmentEpoch++/resetGate 排队后，host fed 去重天然兼容 |
 | I6 client.inject 9 锚点 | 2 | session.prompt 走 ctx.sessions（cancelTurn 同源已在用），不动 inject |
@@ -173,7 +173,7 @@
 
 ## 7. 审查记录与裁决
 
-**R1（证据事实轴，pass-with-minor）**：70% claim 亲验属实（代理 read 循环导致剩余转待核，主会话已补核 Q2=宿主三包全文无 editMessage API）；两处 Blocker 实为引用精确度（asr.ts:832→finalizeSegment→580 跨函数链、715 与 774 关系）——已修；M1/M3 引用范围已精简（828-832、591-596/597-610）；Q1/Q3/Q4（compat-contract 引用/17 条丢句路径/桌面冒烟覆盖）转各批前置核实（批 2/6/8）。** verdict：pass-with-minor，无需阻塞项**。
+**R1（证据事实轴，pass-with-minor）**：70% claim 亲验属实（代理 read 循环导致剩余转待核，主会话已补核 Q2=宿主三包全文无 editMessage API）；两处 Blocker 实为引用精确度（asr.ts:911→finalizeSegment→615 跨函数链、715 与 774 关系）——已修；M1/M3 引用范围已精简（828-832、591-596/597-610）；Q1/Q3/Q4（compat-contract 引用/17 条丢句路径/桌面冒烟覆盖）转各批前置核实（批 2/6/8）。** verdict：pass-with-minor，无需阻塞项**。
 
 **R2（方案最小性轴，pass-with-minor）6 Important 采纳**：① 砍批 4 sense 自适应跳过（未测量先验+I1 面）；② 剥离线 backchannel 抑制发送——**后被 R3 B2 推翻（回归守卫，见下）**；③ 砍批 5 标点升档启发式（无阈值证据）；④ 拆批 6 为 6(⑧)+7(⑨) 并删 silenceMs 真热生效伪需求；⑤ 「不做」清单补记云端 ASR（本地优先理由）；⑥ client 10s<host 20s 超时错配列入批 4 一行修。
 **批 1 执行后两路独立 diff 审查（stepfun-plan 路由，kimi-coding 故障期）**：
