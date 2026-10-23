@@ -227,7 +227,7 @@ t('client（R2 M-b）：onNotice 与 onPartial 同款实例比对（迟到 notic
 t('client（R2 M-c）：bus.enter 重置 playingEndAt（快速重入立即开口不丢首 400ms）', () => {
   const idx = clientSrc.indexOf('async enter(sessionId) {')
   assert.ok(idx >= 0, '缺 bus.enter')
-  const win = clientSrc.slice(idx, idx + 1100)
+  const win = clientSrc.slice(idx, idx + 1500)
   assert.ok(win.includes('playingEndAt = 0'), 'enter 未重置尾音宽限起点——上会话自然停播 ≤400ms 内重入并开口会丢首 400ms')
 })
 

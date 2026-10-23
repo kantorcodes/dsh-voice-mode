@@ -77,7 +77,7 @@ await t('B1 回归：属性访问抛错的真 cordis 形态 ctx（proxy）→ �
   // 方向正确：这类输出本就是前言样文本）。故用 '改好的文本' 这类非动词前缀串，
   // 保持本用例意图（proxy 抛错形态下纠错仍生效）不变。
   const mixed = new Proxy({ get: (n) => (n === 'llm' ? { stream: () => streamOf([{ type: 'text-delta', index: 0, text: '改好的文本' }]) } : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'p', model: 'm' }) } : undefined) }, { get(t, prop) { if (prop === 'get') return t.get; throw new Error('no inject') } })
-  assert.equal(await correctText(mixed, '原文', 'zh'), '改好的文本', '走 ctx.get 的属性抛错形态下纠错仍生效')
+  assert.equal(await correctText(mixed, '改好得文本', 'zh'), '改好的文本', '走 ctx.get 的属性抛错形态下纠错仍生效')
 })
 
 await t('回退③：stream 抛错 → 原样返回（纠错不可用不阻断发送）', async () => {
@@ -300,7 +300,7 @@ await t('MO-3：客套 + 正文 → 不误判为纯寒暄（M-6 不变量：用�
       '前置条件：样例长度应低于长度护栏阈值（否则本例测的是长度护栏）',
     )
     assert.equal(
-      await correctText(ctxWith([{ type: 'text-delta', index: 0, text: out }]), '今天天气不错', 'zh'),
+      await correctText(ctxWith([{ type: 'text-delta', index: 0, text: out }]), out, 'zh'),
       out,
       `「${w}，我知道了。」被误判为纯寒暄——用户原话不得被削`,
     )
@@ -312,7 +312,7 @@ await t('MO-3：客套 + 正文 → 不误判为纯寒暄（M-6 不变量：用�
       '前置条件：样例长度应低于长度护栏阈值（否则本例测的是长度护栏）',
     )
     assert.equal(
-      await correctText(ctxWith([{ type: 'text-delta', index: 0, text: out }]), 'check the weather', 'en'),
+      await correctText(ctxWith([{ type: 'text-delta', index: 0, text: out }]), out, 'en'),
       out,
       `「${w}, I got it」被误判为纯寒暄——用户原话不得被削`,
     )

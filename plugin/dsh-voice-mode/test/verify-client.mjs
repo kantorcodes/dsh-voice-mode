@@ -57,6 +57,9 @@ t('publishConfig.access 为 public', () => {
 t('engines.node 如实声明', () => {
   assert.ok(pkg.engines?.node)
 })
+t('engines.dsh 上界写作 <0.3.0-0（includePrerelease 下排除 0.3.0 的 alpha/rc 预发布）', () => {
+  assert.match(pkg.engines?.dsh ?? '', /<0\.3\.0-0$/)
+})
 t('lib/index.js 存在且为 ESM（export 声明含 name/apply/Config/VoiceSettingsSchema）', () => {
   const src = read('lib/index.js')
   // 精确到 export 条目：旧实现 src.includes('name') 可被 "namespace"/"filename" 等任意

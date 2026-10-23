@@ -122,16 +122,16 @@ await t('I-3 护栏②：前言前缀/元叙述（动词前缀即命中，R4 回
 await t('I-3 护栏边界：阈值 = max(3×原文, 原文+24)（R2 收短输入）', async () => {
   // L=20：3L=60 主导（L+24=44）——60 通过 / 65 回退（与 R1 用例同值，公式切换不破）。
   const src20 = '原'.repeat(20)
-  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(60) }]), src20, 'zh'), '改'.repeat(60), '60 字符（=3L）应通过')
+  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(60) }]), src20, 'zh'), src20, '60 字符（=3L）：长度门放行，但 I-8 相似度门（3 倍膨胀 sim≤0.33）回退')
   assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(65) }]), src20, 'zh'), src20, '65 字符（>3L）应回退')
   // L<12：L+24 主导——R1 的 max(64,3L) 在 L=4（「现在几点」）放行 16 倍膨胀，R2 收到 7 倍。
   const src4 = '现在几点'
   assert.equal(src4.length, 4)
-  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(28) }]), src4, 'zh'), '改'.repeat(28), '28 字符（=L+24, L=4）应通过')
+  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(28) }]), src4, 'zh'), src4, '28 字符（=L+24, L=4）：长度门放行，I-8 相似度门回退')
   assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(29) }]), src4, 'zh'), src4, '29 字符（>L+24, L=4）应回退')
   // L=7：阈值 = max(21, 31) = 31——31 通过 / 32 回退。
   const src7 = '原'.repeat(7)
-  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(31) }]), src7, 'zh'), '改'.repeat(31), '31 字符（=L+24, L=7）应通过')
+  assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(31) }]), src7, 'zh'), src7, '31 字符（=L+24, L=7）：长度门放行，I-8 相似度门回退')
   assert.equal(await correctText(ctxWith([{ type: 'text-delta', index: 0, text: '改'.repeat(32) }]), src7, 'zh'), src7, '32 字符（>L+24, L=7）应回退')
 })
 

@@ -95,6 +95,9 @@ export interface AsrConfig {
   echo?: EchoRefSource
   /** AI 朗读中（TTS 在播）：根治「TTS→回声→ASR→自聊」。为 true 时只走打断快路径、不入段。 */
   isPlaying?: () => boolean
+  /** I-18：裸播放态（不含回声尾音宽限）。预录环/抢救种子以它划句边界——isPlaying 含 400ms+
+   *  尾窗，尾窗内下句续播使其恒真、无句边界，陈旧种子跨句存活。缺省回退 isPlaying。 */
+  isPlayingRaw?: () => boolean
   /** 服务端 Silero VAD 帧级语音检测（partial 与播放期 vadOnly 检测响应下行；打断根治：客户端据此驱动打断，替代 RMS 能量快路径）。 */
   onIsSpeech?: (speech: boolean | undefined) => void
   /** 403 会话过期回调：host 端活跃会话已变更（如被抢占/让出），返回 true 表示已恢复。 */
@@ -300,8 +303,10 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
    *  锚请求体起点而非 sentAt：VAD 首真只证明语音在请求窗内，RTT 大时 sentAt 滞后语音
    *  起点多达一个窗长会切句首（台架 detect 延迟档实测抓红）；无记录时弃段退环起点兜底。 */
   let preRollSeedWall: number | null = null
-  /** 播放态边沿跟踪（播放入口重置种子记录）。 */
+  /** 裸播放态边沿跟踪（I-18：上升/下降沿都重置预录环与种子记录）。 */
   let wasPlaying = false
+  /** 本次裸播放起点墙钟（I-18：种子锁定守卫用）。 */
+  let rawPlayingSinceWall = 0
   /** 门控询问作用域（Issue #15 R15-5）：向客户端交付 VAD 结果期间为真。
    *  作用域内客户端问 aboveEchoFloor() 得 false = 本次检测被回声门否决
    *  （client.tsx 的回声门控是该方法的唯一询问点）→ 抢救种子须随之作废。
@@ -472,6 +477,13 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
           }, 5000)
         })
         res = retry
+        // I-1：重试后仍 202（模型未就绪）≠ 成功——不推进水位、不解析（空体会被当成功推进
+        // uploadedSamples，恢复后该窗丢头）；wake 待机同修（保持 'wake'，B1 约束）。
+        if (res.status === 202) {
+          // 5s 等待期间已 stop / 弃段则不踩状态（idle/transcribing 不得被改写成 loading-model）
+          if (epoch === segmentEpoch && active && state !== 'wake') setState('loading-model')
+          return
+        }
       }
       // 403 会话过期：host 端活跃会话已变更（如被抢占/让出），尝试恢复后重试一次。
       if (res.status === 403 && config.onSessionExpired) {
@@ -623,7 +635,12 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
       // ≤一个检测窗的 AI 尾音——由 AEC 残差水平与 bargeInSalvage 逃生口兜底。
       // Issue #15 R15-5：锁定**前置于**交付客户端——门控否决要在本次交付内作废刚锁的种子
       // （顺序反了则被拒检测仍留下种子，其窗口成为下次真打断的锚点）。
-      if (out.isSpeech === true && preRollSeedWall === null) preRollSeedWall = reqBodyStartWall - 250
+      // I-18 双守卫：响应时须处于裸播放，且请求体整段在本次裸播放起点之后——尾窗内
+      // （isPlaying 真、raw 假）或跨句的陈旧检测不得锁种子（否则 AI 声并入用户消息）。
+      const rawNow = config.isPlayingRaw ? config.isPlayingRaw() : (config.isPlaying?.() ?? false)
+      if (out.isSpeech === true && preRollSeedWall === null && rawNow && reqBodyStartWall >= rawPlayingSinceWall) {
+        preRollSeedWall = reqBodyStartWall - 250
+      }
       if (out.isSpeech !== undefined) deliverIsSpeech(out.isSpeech)
       detectFailStreak = 0 // Issue #15 批 7：成功即清零
       detectSent += samples.length
@@ -993,6 +1010,7 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
     // 打断根治：播放窗口（含尾音宽限）内，AEC 后帧同时进入检测通道（vadOnly 上行）。
     // hold 有明确意图路径（segment 正常累积、partial 上行）。
     const playingNow = config.isPlaying?.() ?? false
+    const rawNow = config.isPlayingRaw ? config.isPlayingRaw() : playingNow
     // 回声地板：慢均值跟踪，仅在「纯回声期」更新（playingNow 且残差未明显高于地板）。
     // 关键：句间停顿（playingNow=false）不更新也不清空——地板保持在上一次回声水平，
     // 避免塌到 0（实测 floor=0.0000 自打断的根因，是 min-tracking + 非播放清空的回归）。
@@ -1045,7 +1063,8 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
       detectChunks.push(data)
       // Issue #15 批 1（ADR-0012）：同帧入预录环（打断抢救种子）。与 detectChunks
       // 同信号（AEC 后 data）、同条件；hardBreak 时取「语音起始-250ms」起并入新段。
-      if (salvageEnabled) {
+      // I-18：预录环只在裸播放时累积（尾窗内的 AI 残响不入环）。
+      if (salvageEnabled && rawNow) {
         if (preRoll.length === 0) preRollStartWall = Date.now()
         preRoll.push(data)
         preRollMs += durationMs
@@ -1061,14 +1080,14 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
     // 让 seek 的墙钟数学跨窗错位一个「播放间隙」：常见流程「AI 播完→用户口述→AI 再开播
     // →用户打断」下 seek 判据全部落空→抢救静默失效（回退 issue 原症状）；backchannel
     // 让位恢复播放后（gap≈1.5s）还会反向切句首（审查 B1，跨窗台架用例锁定）。
-    if (playingNow && !wasPlaying) {
-      wasPlaying = true
+    // I-18：边沿改按裸播放态，且下降沿同样清（句间/尾窗内的环与种子不得跨句）。
+    if (rawNow !== wasPlaying) {
+      wasPlaying = rawNow
+      if (rawNow) rawPlayingSinceWall = Date.now() - durationMs // 本帧音频起点
       preRollSeedWall = null
       preRoll = []
       preRollMs = 0
       preRollStartWall = 0
-    } else if (!playingNow && wasPlaying) {
-      wasPlaying = false
     }
 
     if (holdActive) {
@@ -1159,6 +1178,11 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
         segment.push(data)
         if (segmentMs > MAX_SEGMENT_MS) finalizeSegment()
       }
+    } else if (speechActive && config.isPlaying?.()) {
+      // I-16：静音分支同样要有播放守卫（对照上方 rms>SPEECH_RMS 分支）：播放前开着的段
+      // 在静音帧里仍 speechActive，会饿死检测通道，且播完后陈旧段定稿成幽灵消息。
+      // 与上方同口径强制收口（段内全是播放前真人声）。
+      finalizeSegment(true)
     } else if (speechActive) {
       // P1-5：说完最后一个字 = 语音→静音过渡的首帧（每段只报一次）。
       if (utteranceEndAt === null) {
@@ -1226,13 +1250,14 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
    * 已装配的流/上下文——旧续体与启动 B 并发时无条件置空会制造「active=true 但
    * 静默无收音」。调用方须已在每个 await 后复检 stopRequested||mySeq!==startSeq。
    */
-  const abandonStart = async (myStream: MediaStream, myCtx: AudioContext): Promise<void> => {
+  const abandonStart = async (myStream: MediaStream, myCtx: AudioContext | null): Promise<void> => {
     try {
       myStream.getTracks().forEach((t) => t.stop())
     } catch {
       // ignore
     }
     if (stream === myStream) stream = null
+    if (!myCtx) return
     try {
       await myCtx.close()
     } catch {
@@ -1241,7 +1266,19 @@ export function createAsrEngine(config: AsrConfig, sessionId: string): AsrEngine
     if (audioCtx === myCtx) audioCtx = null
   }
 
-const startRecorder = async (): Promise<void> => {
+  /** I-6：包一层——取流之后任何异常（AudioContext 构造/createMediaStreamSource 等抛错）都要
+   *  释放本启动取得的麦克风与 ctx 再重抛；client 侧 engine.stop() 因 !wasActive 早退兜不住。 */
+  const startRecorder = async (): Promise<void> => {
+    const owned: { stream?: MediaStream; ctx?: AudioContext } = {}
+    try {
+      await startRecorderInner(owned)
+    } catch (error) {
+      if (owned.stream) await abandonStart(owned.stream, owned.ctx ?? null)
+      throw error
+    }
+  }
+
+  const startRecorderInner = async (owned: { stream?: MediaStream; ctx?: AudioContext }): Promise<void> => {
     // 捕获本启动序号：getUserMedia 异步授权返回期间若发生 stop→start（或再次 start），
     // startSeq 被推进，据此放弃本启动。此前用模块级 curStartSeq 比较——新 start() 会覆盖
     // curStartSeq，旧启动返回时 curStartSeq===startSeq 恒真、守卫失效（对抗审查 Blocker）。
@@ -1263,6 +1300,7 @@ const startRecorder = async (): Promise<void> => {
     // Fix8 修正：授权返回时若已被 stop() 抢占（stopRequested）或已被更新的启动取代
     // （序号落后 → 双路开麦防呆）则立即释放麦克风。注意不能用 active 判断——
     // 它在函数末尾才置 true。
+    owned.stream = myStream
     if (stopRequested || mySeq !== startSeq) {
       myStream.getTracks().forEach((t) => t.stop()) // I3：只停本启动的流
       return
@@ -1283,6 +1321,7 @@ const startRecorder = async (): Promise<void> => {
     const AC: typeof AudioContext =
       window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     const myCtx = new AC({ sampleRate: SAMPLE_RATE })
+    owned.ctx = myCtx
     audioCtx = myCtx
     // iOS Safari：非手势栈创建的上下文初始为 suspended，不恢复则 onaudioprocess
     // 永不触发（进入语音模式后静默无反应）——在 getUserMedia 手势栈内尝试恢复。

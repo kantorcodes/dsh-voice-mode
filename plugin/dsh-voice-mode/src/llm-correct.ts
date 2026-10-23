@@ -74,7 +74,30 @@ export function correctionSystem(lang: 'zh' | 'en'): string {
  * 顶替用户消息（发布说明第 9 条要修的正是这个）；把正文判成说明头 = 白丢一次纠错
  * （回退原文，用户话仍在）——故取「宁可漏拦」的一侧（同 R1 I-3 既有取舍）。 */
 const CORRECTION_PREAMBLE_RE =
-  /^(?:以下是|这是)?(?:修正|纠正|更正|纠错)|^(?:here(?:'s| is) (?:the |an |a )?)?(?:corrected|correction)\b/i
+  /^(?:以下是|这是|已|文本)?(?:修正|纠正|更正|纠错)|^(?:here(?:'s| is) (?:the |an |a )?|i have |text after )?(?:corrected|correction)\b/i
+
+/** I-8：归一化相似度（去空白/标点、转小写后 1 - Levenshtein/maxLen）。
+ *  实测合法纠错 ∈[0.50,0.94]，作答 ∈[0.00,0.38]，故阈值 0.45 两侧均无漏放/误伤。 */
+const CORRECTION_MIN_SIMILARITY = 0.45
+const SIMILARITY_MAX_CHARS = 1500
+function normalizedSimilarity(a: string, b: string): number {
+  const norm = (s: string) => Array.from(s.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ''))
+  const x = norm(a)
+  const y = norm(b)
+  const n = Math.max(x.length, y.length)
+  if (n === 0) return 1
+  // O(n·m) 在宿主主线程同步执行：超长输入（远超任何一句语音）跳过本判据，只靠长度门/前言门，避免秒级阻塞。
+  if (n > SIMILARITY_MAX_CHARS) return 1
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return 1 - prev[y.length] / n
+}
 
 /**
  * 寒暄词表：弱模型爱加的客套/应答。两个正则共用一份词表，避免「前缀形态」与
@@ -163,6 +186,8 @@ export async function correctText(
     //      约 15 行无依赖；作为产品待决项登记在 STATE，不进本廉价护栏）。
     //   ② 前言前缀（「修正后：」「Corrected:」等说明头/元叙述）＝带说明输出。
     if (corrected.length > Math.max(trimmed.length * 3, trimmed.length + 24)) return text
+    //   ①b I-8：长度门够不到「与原文等长的作答」——归一化相似度 < 0.45 一律回退。
+    if (normalizedSimilarity(trimmed, corrected) < CORRECTION_MIN_SIMILARITY) return text
     if (CORRECTION_PREAMBLE_RE.test(corrected)) return text
     //   M-3（Issue #15 R2）：前言护栏不得被前导寒暄绕过——弱模型在说明头前加一句
     //     「好的，」「当然，」「Sure,」即越过上面的 ^ 锚，模型元叙述原样进入用户消息

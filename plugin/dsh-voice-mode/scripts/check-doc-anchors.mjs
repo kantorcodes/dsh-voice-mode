@@ -62,7 +62,7 @@ const rootArg = argv.indexOf('--root')
 const ROOT = rootArg >= 0 && argv[rootArg + 1] ? resolve(argv[rootArg + 1]) : resolve(pluginRoot, '..', '..')
 
 /** 扫描时跳过的目录（构建产物 / 依赖 / 本地草稿）。 */
-const SKIP_DIRS = new Set(['node_modules', '.git', 'site', '.scratch', 'dist', 'coverage'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'site', '.scratch', 'dist', 'coverage', '.install']) // .install = 宿主安装器落盘的第三方 README（未入库），非本仓文档
 
 /**
  * 文件引用的扩展名——**长扩展名必须排前面**（`json` 先于 `js`、`tsx` 先于 `ts`），

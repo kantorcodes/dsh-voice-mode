@@ -808,6 +808,18 @@ export function apply(ctx: Context, config: Config): void {
   const sseClients = new Set<SseClient>()
   /** M5：每 tab 最新连接——重连时旧连接的迟到 close 不得武装让出计时（防健康 owner 被误让出）。 */
   const latestConnByTab = new Map<string, SseClient>()
+  /** I-11：单连接写缓冲上限；慢/挂起的消费者超此水位即断开，防 audio 帧在内存里无界堆积。 */
+  const SSE_MAX_BUFFERED = 4 * 1024 * 1024
+  // I-12：热重载/卸载回收——宿主 disposer 只删路由，不会关已建立的 SSE 长连接。
+  // 先清表再 end：迟到的 close 回调看到 latestConnByTab 已空，不会再武装让出计时。
+  ctx.effect(() => () => {
+    if (ownerYieldTimer) clearTimeout(ownerYieldTimer)
+    ownerYieldTimer = null
+    const live = [...sseClients]
+    sseClients.clear()
+    latestConnByTab.clear()
+    for (const c of live) c.end()
+  })
   const broadcast = (event: string, payload: unknown): void => {
     for (const c of sseClients) {
       try {
@@ -1450,7 +1462,8 @@ export function apply(ctx: Context, config: Config): void {
           }
           // fork 加固：切换限流（每会话 2 次/2 秒——允许「进+退」这类正常快速操作对；
           // 客户端另有 2 秒点击防抖，双保险防状态抖动）。
-          if (!limiter.hit(`toggle:${sessionId}`, 2, 2000)) {
+          // 退出（on:false）不限流：幂等且只会释放资源；被限流吞掉的收尾 off 会让宿主残留 armed（I-7 复审）。
+          if (on === true && !limiter.hit(`toggle:${sessionId}`, 2, 2000)) {
             respondJson(res, 429, { code: 'rate_limited', error: 'rate limited' })
             return
           }
@@ -1999,6 +2012,11 @@ export function apply(ctx: Context, config: Config): void {
         res.write('retry: 3000\n\n')
         const send: SseSink = (event, payload) => {
           res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+          // I-11：无背压处理时 write 返回 false 也照写，慢消费者会把全部帧驻留内存。
+          if (res.writableLength > SSE_MAX_BUFFERED) {
+            console.warn(`[dsh-voice-mode] SSE client too slow (buffered ${res.writableLength}B); dropping connection`)
+            res.destroy() // close 事件走 cleanup 摘除；客户端 EventSource 自动重连
+          }
         }
         const end = (): void => {
           try {

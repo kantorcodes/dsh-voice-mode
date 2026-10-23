@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, stat, unlink } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** 官方模型源（默认）。 */
@@ -39,6 +39,10 @@ export interface EnsureModelOptions {
   /** 是否允许白名单之外的模型源（默认关）。 */
   allowCustomHost: boolean
   broadcast: (event: string, payload: unknown) => void
+  /** I-2：外部取消信号（引擎 close/dispose 时 abort，立即中止在途下载；.part 保留）。 */
+  signal?: AbortSignal
+  /** I-2：body 空闲看门狗毫秒数（缺省 120s；仅测试覆盖）。 */
+  idleTimeoutMs?: number
 }
 
 /**
@@ -82,6 +86,15 @@ export function redirectHostAllowed(finalUrl: string, allowCustomHost: boolean):
   }
 }
 
+/**
+ * I-10：SHA256 校验结果缓存（path → size+mtime+sha，仅缓存「已匹配 spec」的正结果）。
+ * 每次 barge-in 杀子进程后 ensureReady 都会重走 ensureModelFile；239MB 全量哈希在 host
+ * 主线程分块执行 0.6–1.6s（期间 /asr、SSE 心跳、LLM 流抖动）。文件 size+ino+ctime 不变即视为未被改动
+ * （用 ctime 而非 mtime：utimes / cp -p / 解压能回填 mtime，改不了 ctime）。
+ */
+const verifiedCache = new Map<string, string>()
+const cacheKey = (st: { size: number; ino: number; ctimeMs: number }): string => `${st.size}:${st.ino}:${st.ctimeMs}`
+
 /** 流式计算文件 SHA256。 */
 export async function sha256OfFile(path: string): Promise<string> {
   const hash = createHash('sha256')
@@ -106,13 +119,28 @@ export async function sha256OfFile(path: string): Promise<string> {
  * 约束。上游「接受连接后永不吐头」时 60s 内 abort，由上层换下一个 host 重试。
  */
 const MODEL_FETCH_HEADERS_TIMEOUT_MS = 60000
+/**
+ * I-2：body 空闲看门狗——**收到字节即重置**，不设总时长（慢网 1B/s 只要持续有数据就不误杀）。
+ * 上游吐完头后卡死（undici 默认 300s 才断，每文件 2 上游 ×300s）时 120s 内 abort，换下一上游/由上层退避。
+ */
+const MODEL_BODY_IDLE_TIMEOUT_MS = 120000
+
+/** 建立 body 空闲看门狗：kick() 重置，stop() 解除；超时 abort 共用的 ac。 */
+function makeIdleWatch(ac: AbortController, ms: number): { kick: () => void; stop: () => void } {
+  let t: ReturnType<typeof setTimeout> | undefined
+  const stop = (): void => clearTimeout(t)
+  const kick = (): void => {
+    stop()
+    t = setTimeout(() => ac.abort(new Error('model download idle timeout')), ms)
+  }
+  return { kick, stop }
+}
 
 /**
  * 带「仅响应头阶段」超时的 fetch：超时只在上游不吐响应头时触发；
  * 头一旦到达即解除超时，body 可慢速流式传输（慢网合法续传不被误杀）。
  */
-async function fetchWithHeadersTimeout(url: string, init: RequestInit): Promise<Response> {
-  const ac = new AbortController()
+async function fetchWithHeadersTimeout(url: string, init: RequestInit, ac: AbortController = new AbortController()): Promise<Response> {
   const timer = setTimeout(() => ac.abort(new Error('model fetch headers timeout')), MODEL_FETCH_HEADERS_TIMEOUT_MS)
   try {
     return await fetch(url, { ...init, signal: ac.signal })
@@ -129,9 +157,15 @@ export async function ensureModelFile(opts: EnsureModelOptions): Promise<boolean
   const partPath = `${localPath}.part`
 
   // 1) 已有文件：校验哈希；不匹配 → 删除重下（篡改/损坏自愈）。
-  if ((await stat(localPath).catch(() => null))?.isFile()) {
+  const existing = await stat(localPath).catch(() => null)
+  if (existing?.isFile()) {
+    // I-10：size+mtime 未变且此前已校验通过 → 跳过全量哈希。
+    if (verifiedCache.get(localPath) === `${cacheKey(existing)}:${spec.sha256}`) return true
     const ok = (await sha256OfFile(localPath).catch(() => '')) === spec.sha256
-    if (ok) return true
+    if (ok) {
+      verifiedCache.set(localPath, `${cacheKey(existing)}:${spec.sha256}`)
+      return true
+    }
     await unlink(localPath).catch(() => undefined)
   }
 
@@ -142,6 +176,7 @@ export async function ensureModelFile(opts: EnsureModelOptions): Promise<boolean
   const hosts = [...new Set([primaryHost, HOST_PRIMARY, HOST_FALLBACK].filter(Boolean))]
   let lastError = 'no upstream reachable'
   for (const host of hosts) {
+    if (opts.signal?.aborted) break // I-2：已取消（dispose）不再尝试后续上游
     try {
       const done = await downloadVerified({ ...opts, host, partPath, localPath })
       if (done) return true
@@ -153,6 +188,7 @@ export async function ensureModelFile(opts: EnsureModelOptions): Promise<boolean
   // 单次请求无法下载完，删掉会让每次预览都从头开始、永远不完成。
   // 仅在校验失败（downloadVerified 内部 SHA 不匹配）时才清 .part——那里已处理。
   // 原始错误串只进宿主日志；下行（SSE，所有客户端可见）不带，避免泄露路径/URL（host 只发稳定码的约定）。
+  if (opts.signal?.aborted) return false // dispose/热重载主动取消：不是下载失败，不发错误也不告警
   if (lastError) console.warn(`[dsh-voice-mode] model download failed: ${spec.file}: ${lastError}`)
   broadcast('asr-error', { file: spec.file, reason: 'checksum_or_download_failed' })
   return false
@@ -167,8 +203,23 @@ async function downloadVerified(opts: {
   partPath: string
   localPath: string
   broadcast: (event: string, payload: unknown) => void
+  signal?: AbortSignal
+  idleTimeoutMs?: number
 }): Promise<boolean> {
   const { repo, spec, host, allowCustomHost, partPath, localPath, broadcast } = opts
+  // I-2：单次下载共用一个 AbortController——headers 超时、body 空闲看门狗、外部 signal 都 abort 它。
+  const ac = new AbortController()
+  const onAbort = (): void => ac.abort(opts.signal?.reason)
+  if (opts.signal?.aborted) onAbort()
+  else opts.signal?.addEventListener('abort', onAbort, { once: true })
+  const idle = makeIdleWatch(ac, opts.idleTimeoutMs ?? MODEL_BODY_IDLE_TIMEOUT_MS)
+  try {
+    return await downloadBody()
+  } finally {
+    idle.stop()
+    opts.signal?.removeEventListener('abort', onAbort)
+  }
+  async function downloadBody(): Promise<boolean> {
   const url = `${host}/${repo}/resolve/main/${spec.file}`
   const partSt = await stat(partPath).catch(() => null)
   const resumeFrom = partSt?.isFile() ? partSt.size : 0
@@ -179,7 +230,8 @@ async function downloadVerified(opts: {
   //  时无限挂起——ensureModelFile 的 Promise 不 settle，modelsLoading 永不为 null，
   //  后续每次 ASR 请求都永久等待（真机「进语音模式后麦克风无响应、控制台无错」根因）。
   //  注意只限 headers 阶段：body 流式读取不计入（慢网合法续传需数分钟，models.ts:152-154）。
-  const res = await fetchWithHeadersTimeout(url, { headers, redirect: 'follow' })
+  const res = await fetchWithHeadersTimeout(url, { headers, redirect: 'follow' }, ac)
+  idle.kick() // I-2：头已到，开始计 body 空闲
   // 重定向后的最终域名必须仍在白名单内（防恶意模型源把请求导去任意地址）。
   if (!redirectHostAllowed(res.url, allowCustomHost)) return false
   if (res.status === 416) {
@@ -209,9 +261,11 @@ async function downloadVerified(opts: {
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
+          idle.kick() // I-2：收到字节即重置
           received += value.byteLength
           if (!sink.write(value)) {
             await new Promise<void>((r) => sink.once('drain', r))
+            idle.kick()
           }
           if (total > 0) {
             broadcast('asr-progress', {
@@ -228,13 +282,17 @@ async function downloadVerified(opts: {
     })()
   })
   // 完整性校验：不匹配即弃（换下一个上游）。
+  idle.stop()
   const actual = await sha256OfFile(partPath).catch(() => '')
   if (actual !== spec.sha256) {
     await unlink(partPath).catch(() => undefined)
     return false
   }
   await rename(partPath, localPath)
+  const st = await stat(localPath).catch(() => null)
+  if (st) verifiedCache.set(localPath, `${cacheKey(st)}:${spec.sha256}`) // I-10
   return true
+  }
 }
 
 /**
@@ -253,6 +311,38 @@ export function isSafeModelRel(rel: string, subdir: string): boolean {
   return !rel.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')
 }
 
+/** 树清单文件名（整树成功后写入：[{rel,size}]，下次启动逐文件 stat 即可判完整）。 */
+const TREE_MANIFEST = '.model-tree.json'
+
+/** 递归统计 dir 下的真实文件数（跳过 .part 与清单）。 */
+async function countTreeFiles(dir: string): Promise<number> {
+  const ents = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => [])
+  return ents.filter((e) => e.isFile() && !e.name.endsWith('.part') && e.name !== TREE_MANIFEST).length
+}
+
+async function treeCompleteLocally(repoDir: string, subdir: string, sentinel?: string, minFiles?: number): Promise<boolean> {
+  const subRoot = join(repoDir, subdir)
+  const raw = await readFile(join(subRoot, TREE_MANIFEST), 'utf8').catch(() => null)
+  if (raw !== null) {
+    try {
+      const m = JSON.parse(raw) as { files?: Array<{ rel: string; size: number }> }
+      const files = m.files ?? []
+      if (files.length > 0) {
+        for (const f of files) {
+          const st = await stat(join(repoDir, f.rel)).catch(() => null)
+          if (!st?.isFile() || st.size !== f.size) return false
+        }
+        return true
+      }
+    } catch {
+      // 清单损坏：当作无清单，走兜底/联网
+    }
+  }
+  if (!sentinel || !minFiles) return false
+  if (!(await stat(join(repoDir, sentinel)).catch(() => null))?.isFile()) return false
+  return (await countTreeFiles(subRoot)) >= minFiles
+}
+
 export async function ensureModelTree(opts: {
   repo: string
   repoDir: string
@@ -260,11 +350,20 @@ export async function ensureModelTree(opts: {
   primaryHost: string
   allowCustomHost: boolean
   broadcast: (event: string, payload: unknown) => void
+  /** I-2：取消信号 / body 空闲看门狗毫秒数（同 ensureModelFile）。 */
+  signal?: AbortSignal
+  idleTimeoutMs?: number
+  /** I-3：无清单（旧缓存）时的兜底——哨兵文件存在且树内文件数 ≥ minFiles 视为完整。 */
+  sentinel?: string
+  minFiles?: number
 }): Promise<boolean> {
   const { repo, repoDir, subdir, primaryHost, allowCustomHost, broadcast } = opts
   const hosts = [...new Set([primaryHost, HOST_PRIMARY, HOST_FALLBACK].filter(Boolean))]
   // 取其父目录（子目录文件写入正确层）。
   const subRoot = join(repoDir, subdir)
+  // I-3：本地已完整 → 0 网络。旧实现每次（含 barge-in 杀子进程后的冷启动）都先打 HF 列举 API，
+  // 离线即失败，而 187MB 缓存其实完好。
+  if (await treeCompleteLocally(repoDir, subdir, opts.sentinel, opts.minFiles)) return true
   await mkdir(subRoot, { recursive: true }).catch(() => undefined)
 
   let tree: string[] = []
@@ -314,9 +413,17 @@ export async function ensureModelTree(opts: {
           //  不抛错、不进 engineError、连日志都没有。
           //  仍只限 headers 阶段：拿到 res 后才开始流式读 body，慢网合法续传不被误杀
           //  （见 models.ts:152-154 与 fetchWithHeadersTimeout 头注）。
-          const res = await fetchWithHeadersTimeout(url, { headers: { 'user-agent': 'dsh-voice-mode' }, redirect: 'follow' })
+          // I-2：单文件共用 ac——headers 超时 / body 空闲看门狗 / 外部 signal 都 abort 它。
+          const ac = new AbortController()
+          const onAbort = (): void => ac.abort(opts.signal?.reason)
+          if (opts.signal?.aborted) onAbort()
+          else opts.signal?.addEventListener('abort', onAbort, { once: true })
+          const idle = makeIdleWatch(ac, opts.idleTimeoutMs ?? MODEL_BODY_IDLE_TIMEOUT_MS)
+          try {
+          const res = await fetchWithHeadersTimeout(url, { headers: { 'user-agent': 'dsh-voice-mode' }, redirect: 'follow' }, ac)
           if (!redirectHostAllowed(res.url, allowCustomHost)) continue
           if (res.status !== 200) continue
+          idle.kick()
           // 先取 body 读流、再开写流：res.body 为 null 时不留未关闭的 fd 与空 .part 文件
           // （前置 status===200 已使该分支实际不可达，纯顺序卫生）。
           const reader = res.body?.getReader()
@@ -331,8 +438,12 @@ export async function ensureModelTree(opts: {
                 for (;;) {
                   const r = await reader.read()
                   if (r.done) break
+                  idle.kick()
                   size += r.value.byteLength
-                  if (!sink.write(r.value)) await new Promise((r2) => sink.once('drain', r2))
+                  if (!sink.write(r.value)) {
+                    await new Promise((r2) => sink.once('drain', r2))
+                    idle.kick()
+                  }
                 }
                 sink.end()
               } catch (e) {
@@ -346,8 +457,13 @@ export async function ensureModelTree(opts: {
             ok = true
             break
           }
+          } finally {
+            idle.stop()
+            opts.signal?.removeEventListener('abort', onAbort)
+          }
         } catch {
           // 下一个 host
+          if (opts.signal?.aborted) break // I-2：已取消不再换上游
         }
       }
       if (ok) {
@@ -360,5 +476,16 @@ export async function ensureModelTree(opts: {
   }
   // 限并发：表文件小而多，8 路足够。
   await Promise.all(Array.from({ length: 8 }, () => worker()))
+  // I-3：整树成功后才写清单（逐文件 size），下次启动本地 stat 即判完整，0 网络。
+  if (allOk) {
+    const files: Array<{ rel: string; size: number }> = []
+    for (const rel of tree) {
+      const st = await stat(join(repoDir, rel)).catch(() => null)
+      if (st?.isFile()) files.push({ rel, size: st.size })
+    }
+    if (files.length === tree.length) {
+      await writeFile(join(subRoot, TREE_MANIFEST), JSON.stringify({ files })).catch(() => undefined)
+    }
+  }
   return allOk
 }

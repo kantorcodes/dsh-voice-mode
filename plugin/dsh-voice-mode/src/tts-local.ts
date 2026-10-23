@@ -184,6 +184,9 @@ export function kokoroSpec(model: KokoroModel): EngineSpec {
   }
 }
 
+/** I-5：init/synth 的 RPC 超时（上限句 200 字 × RTF 2.2 × 安全系数）。 */
+const CALL_TIMEOUT_MS = 120000
+
 /**
  * 本地 TTS 引擎（TtsEngine 实现，vits / kokoro 共用骨架）。懒加载：首次合成才
  * 校验模型并在子进程创建引擎实例；失败抛错（上层走退避重试）。
@@ -234,6 +237,12 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
    */
   let closed = false
 
+  /** I-2：下载取消闸（close 时 abort，在途模型下载立即中止；.part 保留供续传）。 */
+  const dlAbort = new AbortController()
+  /** I-10：ensureReady 的 IIFE 是否在途。在途时 respawn/interrupt 不得清 ready，
+   *  否则冷启动窗内并发的下一次 ensureReady 会再起一个 IIFE → 双 init、旧引擎不 free。 */
+  let starting = false
+
   /** 杀掉子进程（下一句合成时自动重启）。 */
   const respawnChild = async (): Promise<void> => {
     if (child) {
@@ -241,7 +250,7 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
       child = null
     }
     childInit = false
-    ready = null
+    if (!starting) ready = null
   }
   let voice = spec.defaultVoice
   let speed = 1.0
@@ -252,29 +261,49 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
   /** 稳定错误码（目前仅 kokoro_needs_node）；供设置面板按界面语言翻译。 */
   let engineErrorCode: string | undefined
   let nextId = 1
-  const pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void }>()
+  const pending = new Map<number, { owner: ChildProcess; resolve: (r: WorkerResponse) => void; reject: (e: Error) => void }>()
 
-  /** 主线程 ↔ 合成子进程的请求-应答（带 id 关联，支持并发排队）。 */
-  const call = (msg: Record<string, unknown>): Promise<WorkerResponse> =>
+  /**
+   * 主线程 ↔ 合成子进程的请求-应答（带 id 关联，支持并发排队）。
+   * I-5：必须带超时——worker 活着但卡死时无应答，pump 的 await 永不返回、无 tts-idle。
+   * 超时 → reject 并杀子进程标记重建（respawnChild：下一句 ensureReady 自动 fork 新的）。
+   * init/synth 缺省 120s（上限句 200 字 × RTF 2.2 × 安全系数）；close 由调用方传 100ms。
+   */
+  const call = (msg: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<WorkerResponse> =>
     new Promise<WorkerResponse>((resolve, reject) => {
       if (!child) {
         reject(new Error('tts child not running'))
         return
       }
       const id = nextId++
-      pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        if (!pending.delete(id)) return
+        reject(new Error(`tts child call timeout: ${String(msg.type)}`))
+        if (msg.type !== 'close') void respawnChild()
+      }, timeoutMs)
+      pending.set(id, {
+        owner: child,
+        resolve: (r) => (clearTimeout(timer), resolve(r)),
+        reject: (e) => (clearTimeout(timer), reject(e)),
+      })
       child.send({ id, ...msg })
     })
 
-  const rejectAll = (e: Error): void => {
-    for (const p of pending.values()) p.reject(e)
-    pending.clear()
+  /** 只打回「属于该子进程」的在途请求：旧子进程的迟到 exit 不得误伤新子进程刚发出的 init/synth
+   *  （I-5 超时强杀后立即重建时必现）。 */
+  const rejectAll = (e: Error, owner?: ChildProcess): void => {
+    for (const [id, p] of pending) {
+      if (owner && p.owner !== owner) continue
+      pending.delete(id)
+      p.reject(e)
+    }
   }
 
   const ensureReady = (): Promise<void> => {
     if (ready && child) return ready
     if (!ready) {
       ready = (async () => {
+        starting = true
         engineLoading = true
         engineError = undefined
         engineErrorCode = undefined
@@ -295,6 +324,7 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
               primaryHost: modelHost(),
               allowCustomHost,
               broadcast: trackedBroadcast,
+              signal: dlAbort.signal,
             })
             if (closed) return // R14：校验窗内 close → 不 fork（见 closed 声明处注释）
             if (!ok) throw new Error('local TTS model download/verify failed: ' + f.file)
@@ -315,6 +345,11 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
               primaryHost: modelHost(),
               allowCustomHost,
               broadcast: trackedBroadcast,
+              signal: dlAbort.signal,
+              // I-3：本地完整则 0 网络；无清单的旧缓存以哨兵 + 文件数兜底。
+              // 取上游整树文件数（HF API 实测 int8/fp32 均 355）：低于它一律联网补全，半成品树不会被误判完整。
+              sentinel: 'espeak-ng-data/phontab',
+              minFiles: 355,
             })
             if (closed) return // R15：整树补全窗内 close → 不 fork（同上）
             if (!treeOk) throw new Error('local TTS model download failed: espeak-ng-data')
@@ -360,19 +395,19 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
             child.on('error', (e) => {
               // R15 M4：rejectAll 仍无条件执行——respawnChild/interrupt 置空 child 后
               // 正是靠本回调打回在途 synthesize，否则泵会永久挂在 await 上。
-              rejectAll(e instanceof Error ? e : new Error(String(e)))
+              rejectAll(e instanceof Error ? e : new Error(String(e)), me)
               if (child !== me) return // 迟到的旧子进程事件：不得清掉新子进程的引用
               child = null
               childInit = false
-              ready = null
+              if (!starting) ready = null // I-10：启动在途时由 IIFE 失败路径清
             })
             child.on('exit', (code) => {
-              rejectAll(new Error(`tts child exited with code ${code}`))
+              rejectAll(new Error(`tts child exited with code ${code}`), me)
               if (child !== me) return // 同上：close() 已置空 child 时 child !== me，
               // 此时只需打回在途请求，引用清理早已由 close() 完成。
               child = null
               childInit = false
-              ready = null
+              if (!starting) ready = null // I-10：启动在途时由 IIFE 失败路径清
             })
           }
           if (!childInit) {
@@ -395,6 +430,8 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
           throw e
         } finally {
           engineLoading = false
+          starting = false
+          downloadProgress = null // I-13：成功/失败都清（否则设置面板永久显示「下载中」）
         }
       })().then(
         (v) => {
@@ -476,7 +513,7 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
       const segments = parseEmotionTags(text)
       if (segments.length === 0) {
         // 全部都是单标签（laugh/sigh/emphasis）—— 不产生音频，返回最短 WAV（44 字节 RIFF 头 + 0 长度 PCM）。
-        return pcmToWav(Buffer.alloc(0), 16000)
+        return Buffer.alloc(0) // I-4：无音频统一 0 字节，队列 isEmptyAudio 丢弃
       }
       // 逐段调子进程合成 + 拼 PCM；段间插静音（紧跟 break）；whisper 段乘 0.5。
       // M5 续：见上方 needsRespawn 处注释——Aborted 重试为死路径。
@@ -524,7 +561,7 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
       }
       if (chunks.length === 0) {
         // 全部段都返回了空 samples（罕见——合成器空响应）
-        return pcmToWav(Buffer.alloc(0), resolvedSampleRate || 16000)
+        return Buffer.alloc(0)
       }
       const total = chunks.reduce((acc, c) => acc + c.length, 0)
       const merged = new Float32Array(total)
@@ -539,14 +576,17 @@ export function createSherpaLocalEngine(options: LocalEngineOptions): TtsEngine 
       // R14：最早期置位——早于 await call({type:'close'})。否则 ensureReady 的 IIFE
       // 会在该 await 期间续跑到 fork，造出孤儿子进程（见 closed 声明处注释）。
       closed = true
+      dlAbort.abort() // I-2：中止在途模型下载（.part 保留）
       // 先捕获引用再 await：await 期间子进程可能退出、exit 回调把 child 置 null，
       // 回来再 child.kill() 会打到 null（dsh 关停时曾因此 fatal load failure）。
       const c = child
       if (c) {
         try {
-          await call({ type: 'close' })
+          // I-10：只给 100ms 让 worker free 模型；在途 synth 会让 close 排在其后（普通句 6.7s、
+          // 长句 34s），超时直接走下面的强杀，旧进程不再长占 CPU/内存。
+          await call({ type: 'close' }, 100)
         } catch {
-          // ignore
+          // ignore（超时/子进程已退出）
         }
         try {
           c.kill()

@@ -33,8 +33,10 @@ const SETTINGS_URL = '/voice-mode/settings'
 /** 重试退避：首发 500ms，指数翻倍，封顶 10s（卡片开着时的后台拉取频率上限）。 */
 const RETRY_BASE_MS = 500
 const RETRY_MAX_MS = 10_000
+/** I-7：读写请求上限（宿主无响应时不让卡片永远 loading / 乐观值永久滞留）。 */
+const REQUEST_TIMEOUT_MS = 8000
 
-export function createHttpScope(origin: string = location.origin, fetchImpl: typeof fetch = fetch): HttpScope {
+export function createHttpScope(origin: string = location.origin, fetchImpl: typeof fetch = fetch, timeoutMs: number = REQUEST_TIMEOUT_MS): HttpScope {
   let snap: HttpScopeSnapshot = { status: 'loading', value: {} }
   const subs = new Set<() => void>()
   let inFlight = false
@@ -92,7 +94,7 @@ export function createHttpScope(origin: string = location.origin, fetchImpl: typ
     // 本次读发起时的写代数快照（请求发出前取——写代数在请求发出后变化才说明读已过期）。
     const myGen = writeGen
     try {
-      const res = await fetchImpl(origin + SETTINGS_URL)
+      const res = await fetchImpl(origin + SETTINGS_URL, { signal: AbortSignal.timeout(timeoutMs) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = (await res.json()) as { value?: Record<string, unknown> }
       retryDelay = 0
@@ -164,6 +166,7 @@ export function createHttpScope(origin: string = location.origin, fetchImpl: typ
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ [field]: value }),
+          signal: AbortSignal.timeout(timeoutMs),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = (await res.json()) as { value?: Record<string, unknown> }

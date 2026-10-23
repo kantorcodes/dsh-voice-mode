@@ -275,6 +275,7 @@ export function createAsrRuntime(options: AsrRuntimeOptions): AsrRuntime {
         return true
       })().finally(() => {
         modelsLoading = null
+        lastProgress = null // I-13：成功/失败都清，否则设置面板永久显示「下载中 x%」遮蔽失败态
       })
     }
     return modelsLoading
@@ -325,6 +326,7 @@ export function createAsrRuntime(options: AsrRuntimeOptions): AsrRuntime {
         return join(vadDir, VAD_FILES[0].file)
       })().finally(() => {
         vadLoading = null
+        lastProgress = null // I-13：成功/失败都清，否则设置面板永久显示「下载中 x%」遮蔽失败态
       })
     }
     return vadLoading
@@ -393,6 +395,7 @@ export function createAsrRuntime(options: AsrRuntimeOptions): AsrRuntime {
         return join(senseDir, SENSE_FILES[0].file)
       })().finally(() => {
         senseLoading = null
+        lastProgress = null // I-13：成功/失败都清，否则设置面板永久显示「下载中 x%」遮蔽失败态
       })
     }
     return senseLoading

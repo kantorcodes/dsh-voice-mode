@@ -318,6 +318,8 @@ const AUTO_SEND_EXTRA_MS = 1200
 /** playing 从 true→false 后的回声尾音宽限（扬声器残响/硬件缓冲仍会被麦克风采到）。
  *  此窗口内 isPlaying 仍判 true，防「句播完瞬间的残响」漏入 ASR → 自聊/多重声音。 */
 const ECHO_TAIL_MS = 400
+/** I-7：enter/exit/config 请求上限（宿主无响应时按钮不得永久 pending）。 */
+const TOGGLE_TIMEOUT_MS = 8000
 /** 批 7O M8：backchannel 让位窗口内累计说话帧数阈值——hold 期内 TTS 帧一律丢弃；
  *  累计达 2 帧（约一句：data+final）即清 hold，**第二句起**恢复播放。
  *  I4（Issue #15）：原注释「清 hold 让完整句播完」与实现相反——hold 期到达阈值前
@@ -605,12 +607,18 @@ function createAudioEngine(
   unduck(): void
   /** 当前播放电平 0..1（输出侧 AnalyserNode 的 RMS；麦克风按钮「朗读中」动画用）。 */
   level(): number
+  /** I-4：复位 <audio> 降级粘滞（enter/exit/SSE open 调用）。 */
+  resetFallback(): void
 } {
   // --- 待播放：串行解码，decode 完成即调度（句序天然保持）。 ---
   const pending: PlayFrame[] = []
   // <audio> 降级路径（decodeAudioData 失败后整段使用，逻辑与原引擎一致）。
   const fallbackAudio = new Audio()
   let fallback = false
+  /** I-4：连续 decodeAudioData 失败次数。单句失败只对该句一次性降级；连续 2 次才粘滞 fallback。 */
+  let decodeFailStreak = 0
+  /** I-4：一次性降级的 <audio> 正在播本句——期间 drainPending 不得并发起 Web Audio（防双声）。 */
+  let fallbackBusy = false
   let ctx: AudioContext | null = null
   let duckGain: GainNode | null = null
   let analyser: AnalyserNode | null = null
@@ -653,19 +661,24 @@ function createAudioEngine(
   const playFallback = (): void => {
     const frame = pending.shift() ?? null
     if (!frame) {
+      fallbackBusy = false
       setUi({ playing: false, playingCaption: null })
       return
     }
+    fallbackBusy = true
     const url = URL.createObjectURL(new Blob([frame.audio], { type: frame.mime === 'audio/wav' ? 'audio/wav' : 'audio/mpeg' }))
     fallbackAudio.src = url
-    fallbackAudio.onended = () => {
+    // I-4：非粘滞降级只负责这一句——播完回到 Web Audio 解码路径。
+    const next = (): void => {
       URL.revokeObjectURL(url)
-      playFallback()
+      fallbackBusy = false
+      if (!fallback && ctx) {
+        if (pending.length > 0) drainPending()
+        else setUi({ playing: false, playingCaption: null })
+      } else playFallback()
     }
-    fallbackAudio.onerror = () => {
-      URL.revokeObjectURL(url)
-      playFallback()
-    }
+    fallbackAudio.onended = next
+    fallbackAudio.onerror = next
     fallbackAudio.onplaying = () => {
       try {
         onPlayed?.()
@@ -694,7 +707,7 @@ function createAudioEngine(
 
   /** 解码串行队列：保持句序，decode 完成即无缝调度（音频线程精度）。 */
   const drainPending = (): void => {
-    if (decoding || !ctx || !duckGain || pending.length === 0) return
+    if (decoding || fallbackBusy || !ctx || !duckGain || pending.length === 0) return
     decoding = true
     void (async () => {
       try {
@@ -702,6 +715,7 @@ function createAudioEngine(
           const frame = pending[0]
           // decodeAudioData 会 transfer 掉传入 buffer；传拷贝以保留原字节供降级路径用。
           const buf = await ctx!.decodeAudioData(frame.audio.buffer.slice(0))
+          decodeFailStreak = 0
           // skip/打断防护（Q2 真静音）：解码期间框架被清空则放弃播放。
           if (pending.length === 0 || pending[0] !== frame) return
           pending.shift()
@@ -761,7 +775,8 @@ function createAudioEngine(
         }
         activeSrcs.clear()
         captionQueue.length = 0
-        fallback = true
+        // I-4：按句一次性重试——首次失败仅本句走 <audio>，连续失败 2 次才粘滞。
+        if (++decodeFailStreak >= 2) fallback = true
         playFallback()
       } finally {
         decoding = false
@@ -786,6 +801,7 @@ function createAudioEngine(
     },
     skip() {
       pending.length = 0
+      fallbackBusy = false
       nextEndAt = 0 // P1-2/I1：打断后清调度基准，下句从 now 起播（防空窗）
       fallbackAudio.pause()
       fallbackAudio.onended = null
@@ -802,6 +818,10 @@ function createAudioEngine(
       setUi({ playing: false, playingCaption: null })
     },
     warm,
+    resetFallback() {
+      fallback = false
+      decodeFailStreak = 0
+    },
     unduck() {
       if (!ctx || !duckGain) return
       const now = ctx.currentTime
@@ -1147,6 +1167,7 @@ function createVoiceBus(basePath: string = BASE_PATH, ctx?: any): VoiceBus {
     // 全被拒（静音）。SSE 断开 = 在途帧已随 TCP 断开丢失，此时清线安全；exit→enter
     // 场景 SSE 不断、线保留（继续防护在途旧帧）。首次连接 open 清空 Map 是 no-op。
     source.addEventListener('open', () => {
+      engine.resetFallback() // I-4：重连即给 Web Audio 路径重新机会
       rejectSeqUpTo.clear()
       lastFinalSeq.clear()
       // M14：同清拼帧缓冲——旧连接在途的半句 chunk 已随 TCP 断开丢失，残留缓冲会让
@@ -1578,11 +1599,13 @@ function createVoiceBus(basePath: string = BASE_PATH, ctx?: any): VoiceBus {
       return playingEndAt + ECHO_TAIL_MS + (refDelaySamples / SAMPLE_RATE_16K) * 1000
     },
     async enter(sessionId) {
+      engine.resetFallback() // I-4
       try {
         const res = await fetch(`${location.origin}${basePath}/toggle`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ sessionId, on: true, tabId: TAB_ID, lang: activeLocale() }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS), // I-7：宿主无响应不再让按钮永久 pending
         })
         const out = (await res.json()) as { active?: string | null; error?: string; code?: string }
         // B1 修复：仅当本 tab 真正成为活跃会话才认领 owner；否则保持非 owner（null），
@@ -1610,10 +1633,18 @@ function createVoiceBus(basePath: string = BASE_PATH, ctx?: any): VoiceBus {
           error: out.active === sessionId ? undefined : t('enterFail'),
         }
       } catch {
+        // I-7：超时/网络错误时宿主可能已 arm 本会话（响应丢了）——补发 toggle off，防残留录音/占用。
+        void fetch(`${location.origin}${basePath}/toggle`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId, on: false, tabId: TAB_ID }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS),
+        }).catch(() => {})
         return { ok: false, error: t('enterFail') }
       }
     },
     async exit(sessionId, keepAudio?: boolean) {
+      engine.resetFallback() // I-4
       resetTelemetry()
       ui.turn = 'idle' // P2-4：退出复位回合状态
       // I2：keepAudio（打字退出）时不停 TTS——只让出 host/ASR，朗读继续。
@@ -1634,6 +1665,7 @@ function createVoiceBus(basePath: string = BASE_PATH, ctx?: any): VoiceBus {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ sessionId, on: false, tabId: TAB_ID }),
+          signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS), // I-7
         })
         await res.json()
         // B1 修复：退出后本 tab 不再是 owner；全局 active 可能是别的 tab 的会话，
@@ -1961,6 +1993,8 @@ export function MicButton({
   /** M11：麦克风真正采音中标记（engine.start() 成功才置真）——按钮 pending→on
    *  的晋升门：权限框/getUserMedia 在途时 host 可能已确认活跃，但无麦。 */
   const micReadyRef = useRef(false)
+  /** I-7：进入纪元——每次 enterMode / cancelPending 递增，在途的 enterMode 据此判断自己是否已被取消。 */
+  const enterEpochRef = useRef(0)
   const actionsRef = useRef(inputActions)
   const submitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** 累积模式「静音到点才发」的延迟发送计时（区别于 submitTimerRef 的提交重试计时）。 */
@@ -2066,7 +2100,7 @@ export function MicButton({
    *  这些字段 host 内部使用，client 不消费，透传暴露抽象边界 + 增加传输体积。 */
   const fetchConfig = async (): Promise<VoiceBootConfig> => {
     try {
-      const res = await fetch(`${location.origin}${BASE_PATH}/config`)
+      const res = await fetch(`${location.origin}${BASE_PATH}/config`, { signal: AbortSignal.timeout(TOGGLE_TIMEOUT_MS) }) // I-7：超时走 catch 兜底 bootNow()
       if (!res.ok) return bootNow()
       const c = (await res.json()) as Partial<VoiceBootConfig>
       const cur = bootNow()
@@ -2521,6 +2555,12 @@ export function MicButton({
     if (sid) await bus.exit(sid, reason === 'typing') // Fix：等待 host 退出完成，防 ASR 请求 403
   }
 
+  /** I-7：pending（进入中）再次点击 = 取消：废当前进入纪元并走退出收尾（停引擎、让出 host）。 */
+  const cancelPending = (): void => {
+    enterEpochRef.current++
+    void exitModeRef.current('manual')
+  }
+
   const enterMode = async (): Promise<void> => {
     const sid = sidRef.current
     if (!sid || localRef.current !== 'off') return
@@ -2530,11 +2570,13 @@ export function MicButton({
     isSpeechFalseRun = 0 // M5：同重置迟滞「假」运行计数（模块级，跨会话不重置会误衰减确认速度）
     micReadyRef.current = false // M11：进入即废采音标记（start 成功才置真）
     setLocalMode('pending')
+    const myEnter = ++enterEpochRef.current // I-7：pending 可被再次点击取消（cancelPending 递增此纪元）
     try {
       const entered = await bus.enter(sid)
-      if (!mountedRef.current) {
+      if (!mountedRef.current || enterEpochRef.current !== myEnter) {
         // 权限框/网络期间组件已卸载：释放刚 arm 的 host 会话，不继续建引擎（隐私级泄漏）。
-        if (entered.ok) void bus.exit(sid)
+        // I-7：取消后又重新进入（本次为 pending）时不得退出——否则会杀掉新一轮刚 arm 的会话。
+        if (entered.ok && localRef.current === 'off') void bus.exit(sid)
         return
       }
       if (!entered.ok) {
@@ -2549,6 +2591,10 @@ export function MicButton({
       }
       // 每次进入重新拉取 host 引导参数（静音/打断档位/自动发送/空闲超时/模式）
       const cfg = await fetchConfig()
+      if (enterEpochRef.current !== myEnter) {
+        if (localRef.current === 'off') void bus.exit(sid) // I-7：取消发生在 config 拉取期间——释放已 arm 的 host 会话
+        return
+      }
       const basePath = cfg.basePath
       const silenceMs = cfg.silenceMs
       const interruptLevel = cfg.interruptLevel
@@ -2636,6 +2682,8 @@ export function MicButton({
           echo: bus.echoForAsr(),
           // 回声尾音宽限：playing 或尾音窗口内均视为朗读中，防句播完瞬间的残响漏入 ASR。
           isPlaying: () => bus.ui.playing || Date.now() < bus.playingTailUntil(),
+          // I-18：裸播放态（不含尾窗），预录环/抢救种子以它划句边界。
+          isPlayingRaw: () => bus.ui.playing,
           // 打断根治阶段二：服务端 Silero VAD 帧级检测下行 → 驱动打断（替代 RMS 能量快
           // 路径）。连续 confirmFrames 次 true（墙钟节拍 100ms/拍，三档确认约 0.3/0.2/0.1s）
           // 判真实人声前沿；仅 AI 朗读中（bus.ui.playing）触发 hardBreak，
@@ -2947,10 +2995,10 @@ export function MicButton({
         return
       }
       await engine.start()
-      if (!mountedRef.current) {
-        engineRef.current = null
+      if (!mountedRef.current || enterEpochRef.current !== myEnter) {
+        if (engineRef.current === engine) engineRef.current = null // I-7：取消后重进时不得清掉新引擎
         await engine.stop()
-        void bus.exit(sid)
+        if (!mountedRef.current || localRef.current === 'off') void bus.exit(sid)
         return
       }
       // 抢占守卫：getUserMedia/start 窗口内若被另一 tab 接管（activeSessionId 已变），
@@ -2982,7 +3030,10 @@ export function MicButton({
         }
       }
     } catch (e) {
+      // 已被取消并重新进入（I-7 纪元已推进）：旧流程的失败不得清掉新一轮的引擎/会话
+      if (enterEpochRef.current !== myEnter) return
       // getUserMedia 被拒等：留在 off，红点提示（Q16）
+      engineRef.current = null // I-6：start 失败的引擎不再留引用（麦克风已由引擎自行释放）
       pendingHoldRef.current = false
       pendingHoldReleaseRef.current = false
       clearHoldExit()
@@ -3014,6 +3065,7 @@ export function MicButton({
     if (!takeToggleSlot(toggleHistRef.current, Date.now())) return
     if (localRef.current === 'on') void exitModeRef.current('manual')
     else if (localRef.current === 'off') void enterMode()
+    else if (localRef.current === 'pending') cancelPending()
   }
   const toggleRef = useRef(toggle)
   toggleRef.current = toggle
@@ -3637,6 +3689,8 @@ export function MicButton({
       if (localRef.current === 'on') {
         engineRef.current?.endHeld(true)
         void exitModeRef.current('manual')
+      } else if (localRef.current === 'pending') {
+        cancelPending()
       } else {
         void enterMode()
       }
@@ -4007,10 +4061,9 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
 
   return (
     <div
-      // 可访问性（Issue #15 UX）：状态条是语音模式唯一状态出口，补 role/aria-live
-      // 让屏幕阅读器能播报状态/提示变化（此前无任何语义标记）。
-      role="status"
-      aria-live="polite"
+      // 可访问性（Issue #15 UX / I-19）：live 语义只放在下方「状态文本节点」（sr-only，
+      // role=status aria-atomic）；波形/计时/partial/角标一律 aria-hidden——整条状态条
+      // 作 live 区时，partial（百毫秒级）与每秒计时会被屏幕阅读器持续播报。
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -4029,6 +4082,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
         {/* P0-UX 双条 SVG 波形：先 AI 朗读端(蓝)，后麦克风采集端(绿)；视觉左→右读"AI→我" */}
         {botBars.some((v) => v > 0) && (
           <span
+            aria-hidden="true"
             title={t('botLevelsHint')}
             style={{
               display: 'inline-flex',
@@ -4051,7 +4105,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
             ))}
           </span>
         )}
-        <span style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 14, flexShrink: 0 }}>
+        <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 14, flexShrink: 0 }}>
           {bars.map((v, i) => (
             <span
               key={i}
@@ -4064,7 +4118,31 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
             />
           ))}
         </span>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexGrow: 1 }}>
+        {/* I-19：唯一的 live 节点——只含语义状态（不含 partial / 每秒计时），避免高频播报。 */}
+        <span
+          data-dshvm="status-text"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          style={{
+            position: 'absolute',
+            width: 1,
+            height: 1,
+            overflow: 'hidden',
+            clip: 'rect(0 0 0 0)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {b.ui.error ||
+            (b.ui.sseDown ? t('sseReconnect') : '') ||
+            b.ui.notice ||
+            (b.ui.idleWarn ? t('idleWarn30s') : '') ||
+            (b.ui.state === 'transcribing' ? t('recognizing') : stateText)}
+        </span>
+        <span
+          aria-hidden="true"
+          style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexGrow: 1 }}
+        >
           {b.ui.error
             ? b.ui.error
             : b.ui.sseDown
@@ -4107,6 +4185,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
         </button>
         {b.ui.isSpeech === true && (
           <span
+            aria-hidden="true"
             title={t('vadDetected')}
             style={{
               flexShrink: 0,
@@ -4128,6 +4207,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
             文本链里）。 */}
         {b.ui.ttsNotice && (
           <span
+            aria-hidden="true"
             title={b.ui.ttsNotice}
             style={{
               flexShrink: 0,
@@ -4150,6 +4230,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
         {/* P1-UX 状态条计时器：会话时长（mm:ss），活跃期间按秒递增 */}
         {elapsedSec > 0 && (
           <span
+            aria-hidden="true"
             title={t('elapsedHint')}
             style={{
               flexShrink: 0,
@@ -4167,6 +4248,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
         )}
         {b.ui.aecOff === true && (
           <span
+            aria-hidden="true"
             title={b.ui.bargeInDetectFallback ? t('bargeInDetectFallback') : t('aecOffHint')}
             style={{
               flexShrink: 0,
@@ -4200,6 +4282,7 @@ export function VoiceStatusBar({ bus, sessionId }: StatusBarProps): React.ReactE
       </div>
       {telParts.length > 0 && (
         <div
+          aria-hidden="true"
           style={{
             fontSize: 11,
             color: '#8b949e',
