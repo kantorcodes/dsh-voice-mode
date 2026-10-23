@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/github/license/qishuilalala/dsh-voice-mode?style=flat-square&color=blue)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/qishuilalala/dsh-voice-mode?style=flat-square&color=brightgreen&include_prereleases)](https://github.com/qishuilalala/dsh-voice-mode/releases)
 [![npm version](https://img.shields.io/npm/v/dsh-voice-mode?style=flat-square&color=orange)](https://www.npmjs.com/package/dsh-voice-mode)
-[![Tests: 854 passing](https://img.shields.io/badge/tests-854%20%E2%9C%93-2ea043?style=flat-square)](https://github.com/qishuilalala/dsh-voice-mode/blob/main/docs/rules/STATE.md)
+[![Tests: 979 passing](https://img.shields.io/badge/tests-979%20%E2%9C%93-2ea043?style=flat-square)](https://github.com/qishuilalala/dsh-voice-mode/blob/main/docs/rules/STATE.md)
 
 DeepSeek Harness 语音双工对话模式：会话内一键进入 → 边说边出字的流式识别 → 停顿自动发送 → 最终答复按句流式朗读 + 实时字幕，开口即可打断（真 barge-in）。无需 API Key，识别模型在本地宿主端推理。
 
@@ -29,7 +29,7 @@ dsh ≥0.1.7 上按钮挂在发送键左侧（`conversation.input.activity`）�
 - 状态条与字幕默认开启；两项都关掉即上图的「全部收进按钮」形态，此时录音计时显示在按钮下方、提示文字显示在按钮旁
 
 
-> **最近两版**：**v0.7.28** 输入框内 `Alt/Option+Enter` 切换语音模式 + 快捷键分组与「录制」录入 + 设置即时生效 + 按住说话空闲即录、回复后自动退出 + 点按钮不抢输入框焦点 + 长文本朗读分段改进（PR #17，@dyguests 贡献）；**v0.7.27** 麦克风按钮即状态面板 + 右键快捷设置 + 说完就关 + 总是朗读（PR #16，@dyguests 贡献）。完整记录见 [CHANGELOG](https://github.com/qishuilalala/dsh-voice-mode/blob/main/CHANGELOG.md)。
+> **最近两版**：**v0.7.29** 对抗验证修复批：长句定稿不丢、长朗读不被空闲退出、Edge 朗读 `&`/`<` 不再跳句、Kokoro 可离线、下载卡死自动换源、进入中再点即取消、读屏不再被状态条刷屏等 20 项；**v0.7.28** 输入框内 `Alt/Option+Enter` 切换语音模式 + 快捷键分组与「录制」录入 + 设置即时生效 + 按住说话空闲即录、回复后自动退出 + 点按钮不抢输入框焦点 + 长文本朗读分段改进（PR #17，@dyguests 贡献）。完整记录见 [CHANGELOG](https://github.com/qishuilalala/dsh-voice-mode/blob/main/CHANGELOG.md)。
 >
 > **运行时变更（v0.7.18 ~ v0.7.24）**：① **设置面全版本打通**——dsh 0.1.7+ 上设置页与持久化修复（Settings → 语音模式 专属页、写入与重启保留）；② **国际化重做**——界面语言跟随 dsh 官方语言设置，中/英文完整一致、切换无需刷新；③ **修复 npm/pnpm 全新安装失败与 dsh ≥0.1.7 已安装形态「failed to import」**（0.7.17 及更早版本受影响，请升级到 ≥0.7.18）；④ **官方桌面端（Electron）下本地 Kokoro 修复**——需系统 PATH 上有 Node.js ≥18（或设 `DSHVM_NODE`）；⑤ **v0.7.24：恢复 Edge 云端朗读**——微软服务端自 2026-10-15 起拒绝旧版握手（v0.7.23 及更早的默认 Edge 朗读无声，本地 VITS / Kokoro 不受影响），内联的 msedge-tts 升到 2.1.0；朗读**连续失败时**会提示切换本地引擎；另有 host 加固（`/models/retry` 仅同源 POST、模型树路径校验、错误原文不下行）。兼容 dsh 至 0.2.1-rc.2（0.2.1-alpha.4/5 起设置入口移入侧栏底部「Account menu」弹出层，本插件两处入口仍有效）。
 
@@ -71,7 +71,7 @@ dsh ≥0.1.7 上按钮挂在发送键左侧（`conversation.input.activity`）�
 - **设置**：入口随 dsh 版本而不同（见下方「设置」），可调朗读引擎/音色/语速/打断灵敏度/静音停顿/空闲超时/模型镜像/自动发送/交互模式/唤醒词/口语化提示词/字幕档位/让位语义/让位窗口/打断语音抢救/LLM 纠错；**音色可试听**（按当前音色+语速即时合成预览，自定义 ShortName 亦可）
 - **界面语言**：跟随 dsh 的语言设置（设置 → 通用 → 语言），**切换即时生效、无需刷新**——设置页、语音状态条、字幕、音色名称/性别/口音、错误提示全部随之变化；LLM 口语化提示词也按界面语言选中/英文版。插件词典注册在 dsh 官方 locale 服务的 `voice-mode` 命名空间，社区语言包可据此补充其它语言，缺失的语言回落英文。插件名称与描述在「插件」页同样按语言显示。
 - **容错与诊断**：麦克风被拒红点提示、模型下载失败可见提示、TTS 连接失败状态条提示（自动退避重试）、提交失败文字留在草稿、SSE 断线自动重连；识别/打断检测通道连续失败、状态同步断连时状态条给出提示（可自愈的瞬时失败不打扰）；SenseVoice 定稿超过 2 秒时状态条显示「识别中… Ns」递增（看得见它在工作）；「复制诊断」一键复制版本/运行状态/设置快照/阶段耗时——**不含任何转写原文**（隐私口径）
-- **空闲退出**：5 分钟无活动自动退出并释放麦克风（**正在朗读计为活动**，长朗读不会中途下线）
+- **空闲退出**：5 分钟无活动自动退出并释放麦克风。朗读、AI 说话、回合运行均计为活动，后台标签页同样续期；但距最后一次真实操作（说话 / 打断 / 进入语音）满 2 小时仍会退出
 
 ---
 
@@ -145,7 +145,7 @@ bundle 插件安装后需重启 dsh 生效（Linux：`systemctl restart dsh`；�
 | `captionMaxWidth` | `1` | 字幕宽度档位 0=50vw / 1=70vw / 2=90vw（视口 <686px 窄于 480px，≈686px 接近 480px，>686px 宽于 480px） |
 | `backchannelYield` | `true` | 让位语义（ADR-0008）；朗读期说「嗯/对」自动让位 1.5s + 真要说走硬打断；关 = 行为等同改造前 |
 | `bargeInSalvage` | `true` | 打断语音抢救（Issue #15 批 1 / ADR-0012）：AI 朗读时你开口打断，自动保留从开口到打断生效之间你说的话，并入识别继续发送（修「打断吃句」；关 = 丢弃打断前语音——仅外放且无回声消除的环境建议关） |
-| `llmCorrect` | `false` | LLM 纠错（Issue #15 批 4，默认关）：发送前用大模型对整条语音文本做一次纠错（只改错别字/同音字/标点，保持原意；复用宿主已配置模型。开 = 每条消息多一次约 1 秒的纠错等待；纠错失败自动用原文） |
+| `llmCorrect` | `false` | LLM 纠错（Issue #15 批 4，默认关）：发送前用大模型对整条语音文本做一次纠错（只改错别字/同音字/标点，保持原意；复用宿主已配置模型。开 = 每条消息多一次约 1 秒的纠错等待；纠错失败自动用原文；模型改成回答你而非纠错时同样回退原文） |
 | `yieldMs` | `1500` | 让位窗口时长（ms，500-3000）：`backchannelYield` 命中后 TTS 丢帧持续时长；窗口内用户真要说则由原 `hardBreak` 接管，窗口到点自动恢复播放 |
 
 生效时机分四档：① 即时——快捷键 / 输入框快捷键 / 交互模式 / 朗读范围 / 自动发送 / 字幕浮层 / 状态条 / 朗读引擎 / 音色 / 语速 / 口语化提示词（对后续回复生效）/ 模型镜像（下次下载尝试即生效）；② 下次识别时——定稿重译（SenseVoice）/ 逆文本归一化；③ 下一段话——静音判定时长（断句端点；发送等待固定 1.2 秒不受影响）；④ 下次进入语音模式——打断灵敏度 / 打断方式 / 回声门控 / 自动恢复 / 唤醒词 / 工具提示音 / 字幕字号 / 字幕宽度 / 短应答让位 / 让位窗口 / 打断语音抢救 / LLM 纠错 / 空闲时长。已保存但未生效的项会列在设置卡片顶部（含当前生效值）。设置项默认值由插件配置（`base` 层）提供。
@@ -223,7 +223,9 @@ bundle 插件安装后需重启 dsh 生效（Linux：`systemctl restart dsh`；�
   - **Windows**：`%LOCALAPPDATA%\dsh-voice-mode\models`
   - **macOS / Linux**：`~/.cache/dsh-voice-mode/models`
   - 两者都可用 `cacheDir` 覆盖
-- 下载用 `.part` 断点续传；`huggingface.co` 失败时回退 `hf-mirror.com`（可用 `modelHost` 配置）
+- 下载用 `.part` 断点续传（仅单文件模型）；`huggingface.co` 失败时回退 `hf-mirror.com`（可用 `modelHost` 配置）
+- 下载有 120 秒空闲看门狗：收到字节即重置，上游卡死超时会中止并换源；关闭面板会中止在途下载
+- 模型主文件 SHA256 固定；同一进程内文件 size+inode+ctime 未变则不重复校验（缓存只在内存，重启后首次全量校验）；Kokoro 的 espeak-ng-data 目录树按清单文件大小 / 文件数判完整，首次下载完成后可完全离线使用
 
 ---
 
@@ -307,7 +309,7 @@ flowchart LR
 
 ### 兼容声明（插件市场的版本筛选依据）
 
-`package.json` 声明 `engines.dsh = ">=0.1.1-rc.2 <0.3.0"`（插件市场据此在「按宿主版本筛选」时判定兼容；dsh 0.2.1-alpha.4 起 next/alpha 通道由 `engines.dsh` 单独硬校验，不满足即拒绝加载，故上界封在 0.3.0——未验证的新大版本会被干净拒绝而非静默破损）。已实测范围 **0.1.1-rc.2 → 0.2.1-rc.2**（含官方桌面端等价的 Electron 宿主）；由每周 CI 巡检上游新版本并复验，出现未覆盖版本会自动开 issue。`peerDependencies` 仅声明 `@deepseek-ai/cordis` 与 `react`（宿主提供）。
+`package.json` 声明 `engines.dsh = ">=0.1.1-rc.2 <0.3.0-0"`（插件市场据此在「按宿主版本筛选」时判定兼容；dsh 0.2.1-alpha.4 起 next/alpha 通道由 `engines.dsh` 单独硬校验，不满足即拒绝加载，故上界封在 0.3.0（写作 `<0.3.0-0`，连 0.3.0 的 alpha/rc 预发布一并排除）——未验证的新大版本会被干净拒绝而非静默破损）。已实测范围 **0.1.1-rc.2 → 0.2.1-rc.2**（含官方桌面端等价的 Electron 宿主）；由每周 CI 巡检上游新版本并复验，出现未覆盖版本会自动开 issue。`peerDependencies` 仅声明 `@deepseek-ai/cordis` 与 `react`（宿主提供）。
 
 ## 🚧 已知限制
 
@@ -315,7 +317,7 @@ flowchart LR
 - 发声打断依赖浏览器回声消除（`echoCancellation`）；扬声器音量过大时可能漏声到麦克风
 - `Ctrl+Shift+V` 会覆盖浏览器「粘贴纯文本」快捷键（普通粘贴仍可用 `Ctrl+V`）
 - 识别质量受环境噪声影响；zipformer2 中文流式 + SenseVoice 多语（中英日韩粤）定稿
-- 浏览器自动播放策略：朗读需要页面已有用户交互（点击麦克风即满足）；「试听」依赖 `AbortSignal.timeout`（Safari 16+ / Chrome 103+ / Firefox 100+；老浏览器点击试听会立即提示失败，属预期降级）
+- 浏览器自动播放策略：朗读需要页面已有用户交互（点击麦克风即满足）；进入 / 退出、设置读写、「试听」均依赖 `AbortSignal.timeout`（Safari 16+ / Chrome 103+ / Firefox 100+；老浏览器上这些操作会立即提示失败，属预期降级）
 - **唤醒词为轻量实现**（流式文本匹配，非专用 KWS 引擎）：嘈杂环境可能延迟或误激活；唤醒词本身不会进入聊天
 - hold 模式按住时切换窗口/标签页会**放弃本段**（防持续收音）
 - hero（新会话空态）无语音入口：请先进入会话使用麦克风按钮
@@ -348,7 +350,8 @@ flowchart LR
 | 字幕被输入框挡住 | 默认 `captionMaxWidth=1`（70vw）+ `captionFontSize=0`（12px）在窄屏可能与底部输入框重叠；调高档位或点字幕浮层「×」收起 |
 | 让位行为异常（朗读期说「嗯」不停 / 真话被打断） | 「嗯/对」类短词触发让位 1.5s 后继续朗读；继续说真话会走硬打断；不要时关 `backchannelYield` 即可恢复改造前行为（ADR-0008） |
 | 朗读期说「嗯」没让位 | 确认 `backchannelYield=true`（默认开）；hold 模式松手后让位 1.5s 内继续说话会变硬打断 |
-| 空闲 5 分钟自动退出（不想退） | 调高 `idleTimeoutMinutes`（默认 5 分钟，**朗读计为活动**） |
+| 空闲 5 分钟自动退出（不想退） | 调高 `idleTimeoutMinutes`（默认 5 分钟；朗读 / AI 说话 / 回合运行均计为活动，后台标签页同样续期；距最后一次真实操作满 2 小时仍会退出） |
+| 点麦克风一直转圈 | 宿主不应答时 8 秒超时；转圈时再点一次麦克风即取消进入，不会残留语音会话 |
 
 ---
 
@@ -368,7 +371,7 @@ flowchart LR
 
 ```sh
 pnpm install && pnpm build    # esbuild：lib/index.js（host）+ lib/client.js（browser）
-pnpm test                     # 53 个测试文件串联：单测 + 台架（假浏览器驱动真引擎）+ 结构守卫 + 发布前自检（无需网络）
+pnpm test                     # 75 个测试文件串联：单测 + 台架（假浏览器驱动真引擎）+ 结构守卫 + 发布前自检（无需网络）
 systemctl restart dsh         # 本机加载新 host 代码；其他平台重启 dsh 进程
 ```
 

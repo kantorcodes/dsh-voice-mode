@@ -47,7 +47,7 @@
 | WebSocket 性质 | 消除 |
 |---|---|
 | 有序 | 迟到响应作废逻辑（`segmentEpoch` / `detectGeneration` 的响应校验分支） |
-| 有状态（连接 = 会话生命周期） | 403 会话过期 → 重入 → 全量重发的整条恢复路径（`src/asr.ts:477` 403 重试（`config.onSessionExpired`）+ `src/asr.ts:727` `recoverySegment` 全量重发；2026-10-20 实测刷新，2026-10-21 前快照的 `:416-438` 已漂移，本轮按现态行号刷新） |
+| 有状态（连接 = 会话生命周期） | 403 会话过期 → 重入 → 全量重发的整条恢复路径（`src/asr.ts:489` 403 重试（`config.onSessionExpired`）+ `src/asr.ts:837` `recoverySegment` 全量重发；2026-10-20 实测刷新，2026-10-21 前快照的 `:416-438` 已漂移，本轮按现态行号刷新） |
 | 连接断开即明确失效 | host 侧 90s 空闲扫描回收（`SEGMENT_IDLE_MS`） |
 | 无轮询 | 100ms 量化延迟；`lastPollAt` / `partialInFlight` / `detectInFlight` 三个在途标志 |
 | 二进制帧原生 | base64 膨胀（TTS 下行当前 base64，+33%） |

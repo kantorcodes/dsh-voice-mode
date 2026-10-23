@@ -14,8 +14,8 @@
 | 检测 VAD 阈值 | 0.35 | `src/asr-host.ts:371`（`newVad(vadPath, 0.35)`） |
 | 端点 VAD 阈值 | 0.5 | `src/asr-host.ts:356`（`seg.vad = newVad(vadPath, 0.5, silenceMs() / 1000)`，默认阈值 :333 `newVad`；原锚 340 已指向 `maxSpeechDuration`，属指错） |
 | `INT_CONFIRM_FRAMES` | 3 / 2 / 1 | `src/client.tsx:53`（:54 为其文档注释；原值 `:38`/`:37` 为 2026-10-21 前快照，已随 R15 各批重写漂移） |
-| `peakDecay` 基数 | 0.9 per 64ms | `src/asr.ts:1003` |
-| `floorAlpha` 基数 | 0.98 per 64ms | `src/asr.ts:1004` |
+| `peakDecay` 基数 | 0.9 per 64ms | `src/asr.ts:1021` |
+| `floorAlpha` 基数 | 0.98 per 64ms | `src/asr.ts:1022` |
 | `SPEECH_RMS` | 0.015 | `src/asr.ts:169` |
 | `VAD_CONTINUE_RMS` | 0.02 | `src/asr-host.ts:171` |
 | `MIN_SPEECH_MS` | 250 | `src/asr.ts:174` |
@@ -40,9 +40,9 @@
 | 常数 | 位置 | 客户端纯核可覆盖 |
 |---|---|---|
 | `echoGateDb` 6 | 设置默认 | ✅ |
-| `peakDecay` 0.9 | `src/asr.ts:1003` | ✅ |
-| `floorAlpha` 0.98 | `src/asr.ts:1004` | ✅ |
-| `confirmFrames` 3/2/1 | `src/client.tsx:2555` | ✅ |
+| `peakDecay` 0.9 | `src/asr.ts:1021` | ✅ |
+| `floorAlpha` 0.98 | `src/asr.ts:1022` | ✅ |
+| `confirmFrames` 3/2/1 | `src/client.tsx:2601` | ✅ |
 | 迟滞连续 2 拍 | `src/client.tsx:57`（`isSpeechFalseRun`）/ :2715-2717-2679（原锚 48-49 / 2593-2595 已漂移） | ✅ |
 | `SPEECH_RMS` 0.015 | `src/asr.ts:169` | ⏳ 阶段二（分段级联） |
 | `MIN_SPEECH_MS` 250 | `src/asr.ts:174` | ⏳ 阶段二 |

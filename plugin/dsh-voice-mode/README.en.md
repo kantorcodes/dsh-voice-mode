@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/github/license/qishuilalala/dsh-voice-mode?style=flat-square&color=blue)](./LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/qishuilalala/dsh-voice-mode?style=flat-square&color=brightgreen&include_prereleases)](https://github.com/qishuilalala/dsh-voice-mode/releases)
 [![npm version](https://img.shields.io/npm/v/dsh-voice-mode?style=flat-square&color=orange)](https://www.npmjs.com/package/dsh-voice-mode)
-[![Tests: 854 passing](https://img.shields.io/badge/tests-854%20%E2%9C%93-2ea043?style=flat-square)](https://github.com/qishuilalala/dsh-voice-mode/blob/main/docs/rules/STATE.md)
+[![Tests: 979 passing](https://img.shields.io/badge/tests-979%20%E2%9C%93-2ea043?style=flat-square)](https://github.com/qishuilalala/dsh-voice-mode/blob/main/docs/rules/STATE.md)
 
 Full-duplex voice conversation mode for DeepSeek Harness (dsh): speak, get a
 spoken answer. Streamed zipformer2 ASR → editable draft → auto send → the
@@ -16,7 +16,7 @@ interrupts playback and the running turn. No API key.
 
 ![Real recording: streaming transcription → auto-send → sentence-by-sentence read-aloud with live captions](https://raw.githubusercontent.com/qishuilalala/dsh-voice-mode/HEAD/plugin/dsh-voice-mode/assets/demo-voice-flow.gif)
 
-> **Latest releases**: **v0.7.28** — `Alt/Option+Enter` inside the composer toggles voice mode, a "Shortcuts" settings group with click-to-record, settings that apply immediately, hold-to-talk that starts from idle and exits after the reply, the mic button no longer steals composer focus, better read-aloud chunking for long text (PR #17 by @dyguests); **v0.7.27** — the mic button becomes the status panel, right-click quick settings, one-shot mode and always-read (PR #16 by @dyguests). Full history in the [CHANGELOG](https://github.com/qishuilalala/dsh-voice-mode/blob/main/CHANGELOG.md).
+> **Latest releases**: **v0.7.29** — adversarial-verification fix batch: long utterances no longer dropped, long read-aloud no longer cut by idle exit, Edge TTS no longer skips sentences containing `&`/`<`, Kokoro works offline, stalled downloads switch mirrors, tap again while connecting to cancel, screen readers no longer flooded by the status bar (20 fixes); **v0.7.28** — `Alt/Option+Enter` inside the composer toggles voice mode, a "Shortcuts" settings group with click-to-record, settings that apply immediately, hold-to-talk that starts from idle and exits after the reply, the mic button no longer steals composer focus, better read-aloud chunking for long text (PR #17 by @dyguests). Full history in the [CHANGELOG](https://github.com/qishuilalala/dsh-voice-mode/blob/main/CHANGELOG.md).
 >
 > **Runtime changes (v0.7.18 – v0.7.24)**: (1) **Settings work on every dsh version** — fixed the settings page and persistence on dsh 0.1.7+ (Settings → Voice Mode page, writes survive restarts); (2) **i18n rebuilt** — the UI follows dsh's official language setting, zh/en fully consistent, switching needs no refresh; (3) **fixed fresh npm/pnpm installs and the dsh ≥0.1.7 installed-form "failed to import"** (0.7.17 and earlier are affected — upgrade to ≥0.7.18); (4) **local Kokoro fixed under the official desktop (Electron) app** — needs Node.js ≥18 on PATH (or set `DSHVM_NODE`); (5) **v0.7.24: Edge cloud read-aloud restored** — since 2026-10-15 Microsoft's service rejects the old handshake (v0.7.23 and earlier are silent on the default Edge engine; local VITS / Kokoro are unaffected), so the inlined msedge-tts is bumped to 2.1.0; when read-aloud **fails several sentences in a row** the plugin now suggests switching to a local engine; plus host hardening (`/models/retry` is same-origin POST only, model-tree path checks, raw error strings no longer sent downstream). Compatible with dsh up to 0.2.1-rc.2 (from 0.2.1-alpha.4/5 the Settings entry moved into the "Account menu" popover at the bottom of the sidebar; both of this plugin's entry points still work).
 
@@ -157,7 +157,7 @@ If a wake word is configured, you land in standby first (the status bar prompts 
 | `captionMaxWidth` | `1` | Caption width tier 0=50vw / 1=70vw / 2=90vw |
 | `backchannelYield` | `true` | Yield semantics (ADR-0008); saying `嗯 / 对` while reading auto-pauses for 1.5 s; genuine speech still triggers hard barge-in; off = behavior identical to pre-change |
 | `bargeInSalvage` | `true` | Barge-in salvage (Issue #15 batch 1 / ADR-0012): when you speak to interrupt while the agent is reading aloud, keep what you said from speech onset to break confirmation and merge it into recognition (fixes swallowed break-in speech; off = discard pre-break audio; recommended off only on speakers without echo cancellation) |
-| `llmCorrect` | `false` | LLM correction (Issue #15 batch 4, off by default): before sending, run one LLM pass over the whole transcribed text (typos/homophones/punctuation only, meaning preserved; reuses the host configured model). On = about one extra second per message; falls back to the original text if correction fails |
+| `llmCorrect` | `false` | LLM correction (Issue #15 batch 4, off by default): before sending, run one LLM pass over the whole transcribed text (typos/homophones/punctuation only, meaning preserved; reuses the host configured model). On = about one extra second per message; falls back to the original text if correction fails or the model answers you instead of correcting |
 | `yieldMs` | `1500` | Yield-window length (ms, 500-3000): how long TTS frames are dropped after `backchannelYield` triggers; if you really want to speak in the window the normal `hardBreak` takes over, and playback resumes when the window ends |
 
 Effect timing, in four tiers: ① immediately — shortcut / composer shortcut / interaction mode / read-aloud scope / auto-send / captions / status bar / engine / voice / rate / spoken format (applies to later replies) / model mirror (next download attempt); ② next recognition — finalization re-transcription (SenseVoice) / ITN; ③ next utterance — silence threshold (endpoint; the send wait stays a fixed 1.2 s); ④ next time you enter voice mode — interrupt sensitivity / barge-in mode / echo gate / auto-resume / wake word / tool beep / caption font / caption width / backchannel yielding / yield window / barge-in salvage / LLM correction / idle timeout. Saved-but-not-yet-effective items are listed at the top of the settings card with their current effective values. Defaults come from the plugin config (`base` layer) — they follow the config unless explicitly changed.
@@ -234,7 +234,9 @@ You can also edit the `voice-mode:` section of `~/.dsh/settings.yaml` directly (
   - **Windows**: `%LOCALAPPDATA%\dsh-voice-mode\models`
   - **macOS / Linux**: `~/.cache/dsh-voice-mode/models`
   - both overridable via `cacheDir`
-- Downloads use `.part` resume; `huggingface.co` falls back to `hf-mirror.com` on failure (configurable via `modelHost`)
+- Downloads use `.part` resume (single-file models only); `huggingface.co` falls back to `hf-mirror.com` on failure (configurable via `modelHost`)
+- A 120 s idle watchdog guards downloads: any received bytes reset it, a stalled upstream is aborted and the next source tried, and closing the panel aborts in-flight downloads
+- Main model files are SHA256-pinned; within one process a file whose size+inode+ctime is unchanged is not re-verified (the cache is in memory only, so the first run after a restart verifies in full); the Kokoro espeak-ng-data tree is judged complete by manifest file sizes / file count, and once first downloaded Kokoro works fully offline
 
 ---
 
@@ -318,7 +320,7 @@ Also: the on-device recording fixture used for debugging is **off by default**; 
 
 ### Compatibility declaration (what the plugin market's version filter reads)
 
-`package.json` declares `engines.dsh = ">=0.1.1-rc.2 <0.3.0"` (the market uses it for "filter by host version"; from dsh 0.2.1-alpha.4 the next/alpha channels enforce `engines.dsh` alone as a hard check and refuse to load a plugin outside the range, so the upper bound is capped at 0.3.0 — an unverified new major is cleanly refused instead of silently broken). Verified range: **0.1.1-rc.2 → 0.2.1-rc.2** (including an Electron host equivalent to the official desktop app). A weekly CI check watches upstream releases and opens an issue for any uncovered version. `peerDependencies` only lists `@deepseek-ai/cordis` and `react` (provided by the host).
+`package.json` declares `engines.dsh = ">=0.1.1-rc.2 <0.3.0-0"` (the market uses it for "filter by host version"; from dsh 0.2.1-alpha.4 the next/alpha channels enforce `engines.dsh` alone as a hard check and refuse to load a plugin outside the range, so the upper bound is capped at 0.3.0 (written `<0.3.0-0` so 0.3.0 alpha/rc prereleases are excluded too) — an unverified new major is cleanly refused instead of silently broken). Verified range: **0.1.1-rc.2 → 0.2.1-rc.2** (including an Electron host equivalent to the official desktop app). A weekly CI check watches upstream releases and opens an issue for any uncovered version. `peerDependencies` only lists `@deepseek-ai/cordis` and `react` (provided by the host).
 
 ## 🚧 Known limitations
 
@@ -329,7 +331,7 @@ Also: the on-device recording fixture used for debugging is **off by default**; 
 - **The wake word is a lightweight implementation** (text matching on the streaming transcript, not a dedicated KWS engine): it may lag or misfire in noisy environments; the wake word itself never enters the chat (the buffer is dropped on hit)
 - In hold mode, switching windows/tabs while holding **abandons the segment** (prevents continuous recording); come back and hold again
 - The hero (new-session empty state) has no voice entry: voice mode is a session-level feature; enter a session first and use the mic button in the input toolbar
-- The preview request timeout uses `AbortSignal.timeout` (Chrome 103+ / Firefox 100+ / Safari 16+); on older browsers clicking preview immediately shows a failure hint — an expected degradation
+- Entering/exiting voice mode, reading/writing settings and preview all rely on `AbortSignal.timeout` (Chrome 103+ / Firefox 100+ / Safari 16+); on older browsers these actions immediately show a failure hint — an expected degradation
 - **Cloud read-aloud (Edge) depends on a Microsoft online service**: the server side may change its handshake or limits at any time (it did on 2026-10-15 — see CHANGELOG 0.7.24). If several sentences in a row fail, the status bar/toast suggests switching to local VITS / Kokoro, which the settings panel does in one click
 - `spokenFormat` is injected through the official `system-prompt/assemble` waterfall; if the current session uses a **complete prompt** (persona `complete: true` agent preset) it is not injected (the official `complete` contract wins)
 - Local Kokoro needs about 1 s to rebuild its engine before the next sentence after a barge-in (the price of killing in-flight synthesis)
@@ -355,7 +357,8 @@ Also: the on-device recording fixture used for debugging is **off by default**; 
 | Caption is hidden behind the input box | Default `captionMaxWidth=1` (70vw) + `captionFontSize=0` (12px) can overlap the bottom input on narrow viewports; raise the tier or click the caption's `×` to dismiss |
 | Yield behavior is wrong (saying `嗯` doesn't pause / real speech gets hard-barge) | Short backchannel words (`嗯 / 对`) auto-pause 1.5 s then reading resumes; continuing to speak triggers hard barge-in; disable `backchannelYield` to restore pre-change behavior (ADR-0008) |
 | Says `嗯` but no yield happens | Confirm `backchannelYield=true` (default on); in hold mode, continuing to talk within 1.5 s of release triggers hard barge-in |
-| Auto-exits after 5 minutes idle (don't want) | Raise `idleTimeoutMinutes` (default 5 min, **reading counts as activity**) |
+| Auto-exits after 5 minutes idle (don't want) | Raise `idleTimeoutMinutes` (default 5 min; reading, the AI speaking and a running turn all count as activity, and background tabs renew too; it still exits 2 hours after your last real action) |
+| Mic button spins forever | The host not answering times out after 8 s; click the mic again while it spins to cancel entering, leaving no voice session behind |
 
 ---
 

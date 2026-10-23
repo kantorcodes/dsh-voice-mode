@@ -110,6 +110,12 @@
   3. 屏幕阅读器（如 VoiceOver / NVDA）应读出「跳过当前朗读」
 - **预期**：`aria-label` 朗读出中文
 - **失败信号**：aria 缺失 / 读出英文 `Skip`
+
+### [ ] 3.4 状态条播报（VoiceOver / NVDA）
+- **前置**：1.3 通过，开启 VoiceOver 或 NVDA
+- **步骤**：进语音模式说一段话，观察朗读、计时与实时转写期间的播报
+- **预期**：只播报状态文本变化（出错 / 同步断开 / 提示 / 空闲预警 / 识别中等当前状态）；波形、计时、实时转写、角标不被反复播报
+- **失败信号**：实时转写或每秒计时被持续朗读
 - **时间**：1 分钟
 
 ---
@@ -164,7 +170,7 @@
   3. 观察 AI 是否立即停止 + 1.5s 内新内容不播
 - **预期**：当前句立即停止；1.5s 内保持静音（不读新内容）；用户说新内容 → AI 收 + 取消回合
 - **失败信号**：AI 继续朗读完整长段 / 1.5s 后直接接着读 / 「嗯」未生效
-- **回退**：检查 `src/asr.ts:59 matchBackchannel` + `src/client.tsx:1462` 帧守卫（`backchannelHoldUntil` 让位窗口内丢弃 TTS 帧）+ `src/client.tsx:2765` 的 `setBackchannelHold` 调用点（方法定义在 `:1647`）
+- **回退**：检查 `src/asr.ts:59 matchBackchannel` + `src/client.tsx:1483` 帧守卫（`backchannelHoldUntil` 让位窗口内丢弃 TTS 帧）+ `src/client.tsx:1686` 的 `setBackchannelHold` 调用点（方法定义在 `:1647`）
 - **时间**：2 分钟
 
 ### [ ] 5.2 hardBreak 真打断优先于让位

@@ -693,3 +693,11 @@ class AgentDefaultModelConfig extends Service {
 - **0.2.1-alpha.5：设置卡片探针稳定失败（3/3），但已实证非本仓库回归**：① 同核心同脚本重跑两次均「找不到设置卡片（Plugins 详情页与 Settings→Plugins 两处均无）」；② **A/B 对照**——同一核心同一脚本跑**发布包 0.7.25**（DSHVM_SPEC=0.7.25，未经批 1-7 改动的线上代码）同样失败；③ 而 §19（同日 11:37）记录同探针在 alpha.5 上 16/16 全过。mic 按钮渲染与 console 0 error 在失败轮次中均通过——插件加载与客户端渲染正常，失败面限于设置卡片的导航可达性。判定：环境/探针侧问题（alpha.5 的 UI 导航序列或首次运行态），非插件代码回归；rc.2（0.2.1 正式版候选，更重要目标）全量通过。**遗留登记**：alpha.5 的设置卡片探针失败待用户侧（Windows 桌面端）复跑确认；若复现需按 §19 机制性变化②（Account menu → Settings → Voice Mode）扩探针路由。
 - 未跑层（如实声明缺口）：L4 真语音闭环（DSHVM_VOICE_LOIC/VOICE_CHAIN 需本机缓存 VITS/zipformer 模型，本次未启用）；**桌面端 Electron 冒烟（真 Electron + Xvfb/Windows 宿主）未跑**——本服务器无桌面环境，历史先例（v0.7.25 批 5）在 Windows 宿主执行，已登记 must-verify-manually 交用户侧补跑（0.2.1-alpha.5/rc.2 两个核心）。
 - 结论：批 1-7 变更在 0.2.1-rc.2 上全链路验证通过；alpha.5 的设置卡片探针失败为环境性问题（A/B 已排除插件回归），遗留用户侧复跑。
+
+## 21. engines.dsh 上界语义与发布门禁（2026-10-23，OQ4 / OQ3 / I-17 落地）
+
+- **上界语义**：v0.7.28 及以前为 `engines.dsh = ">=0.1.1-rc.2 <0.3.0"`。semver 的 prerelease 规则使 `<0.3.0` **不排除** `0.3.0-alpha.1` / `0.3.0-rc.1`（它们小于 0.3.0）；上游 0.2.1-rc.2 的 `unmetRequirements()` 与 dshmarket 兼容判定均用 `includePrerelease:true`，故这些预发布会被判兼容。要排除须写成 `<0.3.0-0`。
+- **生效面**：在跑的 0.2.0-rc.2 只看 peerDependencies，对 engines.dsh 零校验（纯文档性）；0.2.1-rc.2 起 engines.dsh 单独决定兼容性。所以收紧上界在升级宿主到 0.2.1-rc.2 后才真正生效，但应在升级前改。
+- **已落地（v0.7.29）**：engines.dsh 改为 `">=0.1.1-rc.2 <0.3.0-0"`（package.json + 中英 README + CONTEXT 同步）；`test/verify-client.mjs` 锁定上界写法。
+- **发布门禁（机械化）**：① check-build-tag 脚本——入库 lib 客户端产物里的 BUILD_TAG 必须是被检出提交的祖先，且其后 src 与构建脚本无改动（解决 v0.7.26/27/28 tag 内 lib 落后一行的系统性缺陷）；只在 release.yml 的 build 之前跑（checkout `fetch-depth: 0`）；不进逐提交 CI——本仓惯例「先提交 src、再单独提交重建产物」，逐提交校验会让中间提交误红。② check-notices-versions 脚本——第三方声明表的包版本必须与 pnpm 锁文件解析版本一致（已修 follow-redirects 1.16.0 → 1.16.1）。③ CI 增加 typecheck 步骤（当前仅覆盖 devDependencies 钉的 0.1.5-rc.1 类型面；0.2.x 类型矩阵仍待办）。
+- **正典发布流程**：提交源码 → `node build.mjs`（BUILD_TAG = 该提交）→ 提交 lib → 在 lib 提交上打 tag；两者之间不得再改 src，否则上述门禁红。

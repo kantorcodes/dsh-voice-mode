@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/qishuilalala/dsh-voice-mode?style=flat-square&color=blue" alt="License: MIT"></a>
   <a href="https://github.com/qishuilalala/dsh-voice-mode/releases"><img src="https://img.shields.io/github/v/release/qishuilalala/dsh-voice-mode?style=flat-square&color=brightgreen&include_prereleases" alt="Latest release"></a>
   <a href="https://www.npmjs.com/package/dsh-voice-mode"><img src="https://img.shields.io/npm/v/dsh-voice-mode?style=flat-square&color=orange" alt="npm version"></a>
-  <a href="docs/rules/STATE.md"><img src="https://img.shields.io/badge/tests-854%20%E2%9C%93-2ea043?style=flat-square" alt="Tests: 854 passing"></a>
+  <a href="docs/rules/STATE.md"><img src="https://img.shields.io/badge/tests-979%20%E2%9C%93-2ea043?style=flat-square" alt="Tests: 979 passing"></a>
 </p>
 
 ![dsh-voice-mode 全双工语音对话](assets/hero-banner.png)
@@ -34,6 +34,13 @@
 ---
 
 ## 🆕 最近更新
+
+**v0.7.29 —— 对抗验证修复批**（详见 [CHANGELOG](CHANGELOG.md)）
+- 🧩 长句还在识别时接着说下一句，前一句不再被吞；朗读中按住打断再上滑取消后，下一句不再丢
+- ⏱️ 长朗读、长工具回合不再被「空闲退出」掐断（距最后一次真实操作满 2 小时才退出）
+- 🔤 回复含 `&`、`<`、`>` 时 Edge 朗读不再整句跳过；本地 Kokoro 下载完成后可完全离线
+- 🌐 模型下载卡住 120 秒自动换源；点麦克风转圈时再点一次即取消，8 秒无应答自动收尾
+- ♿ 读屏软件只播报状态变化，不再被实时转写和计时刷屏
 
 **v0.7.28 —— 输入框内快捷键与按住说话优化**（社区贡献 [@dyguests](https://github.com/dyguests)，PR #17）
 - ⌨️ 光标在输入框里按 **`Alt+Enter`**（Mac 为 `Option+Enter`）即可进入 / 退出语音模式，不会插入换行；可在设置里改键或留空禁用
@@ -228,7 +235,7 @@ flowchart LR
 | [完整使用说明（中文）](plugin/dsh-voice-mode/README.md) | 功能 / 手势 / 设置 / 配置 / 已知限制 / 故障排查 |
 | [English docs](plugin/dsh-voice-mode/README.en.md) | Same, in English |
 | [docs/ 索引](docs/README.md) | 架构决策 / 实施计划 / 真机验收 / 规则 / 调研 / 竞品 |
-| [60 天迭代博客](blog/2026-09-15-eleven-batches-evolution.md) | 从 91 到 254 项测试的故事（现为 854 项） |
+| [60 天迭代博客](blog/2026-09-15-eleven-batches-evolution.md) | 从 91 到 254 项测试的故事（现为 979 项） |
 | [CHANGELOG.md](CHANGELOG.md) | Keep a Changelog 格式 |
 | [RELEASE-NOTES.md](RELEASE-NOTES.md) | 历史归档（v0.7.7 60 天时间线 / v0.7.11 五版本实测；**现行发布说明见 CHANGELOG.md**） |
 
