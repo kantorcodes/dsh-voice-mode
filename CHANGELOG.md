@@ -5,6 +5,16 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.31] - 2026-10-26
+
+### 修复：默认朗读引擎（Edge 云端）再次失效 —— 微软服务端又改了握手
+
+- **症状**：装了本插件后**默认朗读（Edge 云端）整体无声**。CI 的每日探针在 2026-10-26 03:41Z 报红（GitHub runner 与本机复现同因）：WebSocket 握手返回 `Unexpected server response: 200`（应为 101 Switching Protocols）。
+- **根因**：微软把 Edge 朗读端点的握手又换了一轮——本仓库内联的 `msedge-tts 2.1.0` 用的是 `wss://api.msedgeservices.com/tts/...` + `Ocp-Apim-Subscription-Key` + `Sec-MS-GEC-Version: 1-…`，服务端已不再接受。
+- **修复**：内联依赖升到 `msedge-tts 2.1.1`（上游 2026-10-25 发布）：端点回到 `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`，查询参数改为 `TrustedClientToken`，`Sec-MS-GEC` 换成 v2 哈希。重建 `lib/msedge-tts.cjs` 与第三方声明表（32 个包版本与锁文件一致）。
+- **实测**：本机用**发布包内联产物**真实合成一句中文成功（11232 字节，约 0.5 秒）。本地 VITS / Kokoro 引擎不受影响。
+- 这已是同一类故障的第二次（上次是 2026-10-15，v0.7.24 处理）。每日探针（`.github/workflows/edge-tts-probe.yml`）就是为把「服务端悄悄变了」变成红灯而设——本次它提前 24 小时报出了信号。
+
 ## [0.7.30] - 2026-10-26
 
 ### 兼容 dsh 0.2.1-rc.3（next 通道，CI 巡检 issue #19 触发）

@@ -812,3 +812,11 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - 官方 discussion #8250 回帖：仍需 classic token 或用户网页端发（fine-grained PAT 无权）。
 - 市场收录需审核：提交 issue 到 `dshplugin/dsh-plugin-hub` 后等收录刷新（站点自述「通常一轮刷新周期内」）。
 - 桌面端 Electron 冒烟（0.2.1-rc.3 核心）交用户侧补跑。
+
+### 追加：v0.7.31 —— Edge 云端朗读再次失效（探针报红 → 定位 → 修复）
+
+- **发现**：CI 的每日探针（`Edge TTS live probe`）2026-10-26 03:41Z 报红（GitHub runner）；本机同因复现：`Unexpected server response: 200`（WebSocket 握手应得 101）→ **默认朗读引擎整体无声**（v0.7.24 修过一次、同一类故障第二次）。
+- **根因**：微软再换一轮握手——内联的 `msedge-tts 2.1.0` 用 `wss://api.msedgeservices.com/tts/...` + `Ocp-Apim-Subscription-Key` + `Sec-MS-GEC-Version: 1-…`，服务端已不接受。
+- **修复**：升 `msedge-tts 2.1.1`（上游 10-25 发布，端点回到 `speech.platform.bing.com/.../edge/v1` + `TrustedClientToken` + Sec-MS-GEC v2），重建 `lib/msedge-tts.cjs` 与第三方声明表；pnpm 最短发布年龄豁免已写明理由（同一发布者的补丁版，修的正是阻断性故障）。
+- **实测**：发布包内联产物真实合成一句中文成功（11232 字节 / 约 0.5 秒）；979 项单测、双 typecheck、notices/锚点/根 manifest 守卫全绿。
+- **方法论留痕**：这类「上游悄悄变更」只有靠**每日真实探针**才能提前暴露——本仓库的探针在服务端变更次日即报红，定位后 1 小时内出补丁版。探针本身不改业务代码，是这条链路里最便宜的一环。

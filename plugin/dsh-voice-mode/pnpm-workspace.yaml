@@ -35,3 +35,8 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-home-paths@0.1.7-alpha.2 || 0.1.7-rc.1'
   - '@deepseek-ai/dsh-launch-environment@0.1.7-alpha.2 || 0.1.7-rc.1'
   - '@deepseek-ai/dsh-package-manifest@0.1.7-alpha.2 || 0.1.7-rc.1'
+  # msedge-tts 2.1.1（2026-10-25 发布）：微软 Edge 朗读服务端再次变更握手（端点回到
+  # speech.platform.bing.com/consumer/.../edge/v1 + TrustedClientToken + Sec-MS-GEC v2），
+  # 2.1.0 一律握手失败 → 默认朗读引擎整体无声（CI 探针 2026-10-26 03:41Z 红灯、本机复现同因）。
+  # 该版本发布未满 pnpm 的最短发布年龄，故显式豁免：同一发布者的补丁版，且修复的正是阻断性故障。
+  - msedge-tts@2.1.1

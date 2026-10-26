@@ -22601,9 +22601,9 @@ var require_buffer = __commonJS({
   }
 });
 
-// node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/Output.js
+// node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/Output.js
 var require_Output = __commonJS({
-  "node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/Output.js"(exports2) {
+  "node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/Output.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.OUTPUT_EXTENSIONS = exports2.OUTPUT_FORMAT = void 0;
@@ -22621,9 +22621,9 @@ var require_Output = __commonJS({
   }
 });
 
-// node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/Prosody.js
+// node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/Prosody.js
 var require_Prosody = __commonJS({
-  "node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/Prosody.js"(exports2) {
+  "node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/Prosody.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.VOLUME = exports2.PITCH = exports2.RATE = exports2.ProsodyOptions = void 0;
@@ -22679,9 +22679,9 @@ var require_Prosody = __commonJS({
   }
 });
 
-// node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/utils.js
+// node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/utils.js
 var require_utils = __commonJS({
-  "node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/utils.js"(exports2) {
+  "node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/utils.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.joinPath = void 0;
@@ -22692,9 +22692,73 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/MsEdgeTTS.js
+// node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/SecMsGec.js
+var require_SecMsGec = __commonJS({
+  "node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/SecMsGec.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.hashSecMsGecV2 = hashSecMsGecV2;
+    var EDGE_COPYRIGHT = "Copyright (C) Microsoft Corporation. All rights reserved.";
+    var SWAP_FIRST_WORD = { swappedWord: 4010109435, swappedSum: 1995771700, swappedProduct: 3287280279 };
+    var SWAP_SECOND_WORD = { swappedWord: 3273069531, swappedSum: 411160124, swappedProduct: 901586633 };
+    var MIX_FIRST_WORD = [3482890513, 2265471903, 315537773, 629022083];
+    var MIX_SECOND_WORD = [2725517045, 3548616447, 2090019721, 3215236969];
+    async function hashSecMsGecV2(ticksAndToken) {
+      const message = new TextEncoder().encode(EDGE_COPYRIGHT + ticksAndToken);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
+      return `${toUpperHex(cs64(message, digest))}-${toUpperHex(digest)}`;
+    }
+    function cs64(message, digest) {
+      const digestView = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
+      const firstKey = (digestView.getUint32(0, true) | 1) >>> 0;
+      const secondKey = (digestView.getUint32(4, true) | 1) >>> 0;
+      const padded = new Uint8Array(Math.ceil(message.length / 8) * 8);
+      padded.set(message);
+      const words = new DataView(padded.buffer);
+      let swapSum = 0;
+      let lastSwap = 0;
+      let mix = 0;
+      let mixSum = 0;
+      for (let offset = 0; offset < padded.length; offset += 8) {
+        const firstWord = words.getUint32(offset, true);
+        const secondWord = words.getUint32(offset + 4, true);
+        const firstSwap = swapTerm(firstWord, firstKey, SWAP_FIRST_WORD);
+        lastSwap = swapTerm(secondWord, secondKey, SWAP_SECOND_WORD);
+        swapSum = swapSum + firstSwap + lastSwap >>> 0;
+        mix = swapAndMultiply(Math.imul(mix + firstWord, firstKey), MIX_FIRST_WORD);
+        mixSum = mixSum + mix >>> 0;
+        mix = swapAndMultiply(Math.imul(mix + secondWord, secondKey), MIX_SECOND_WORD);
+        mixSum = mixSum + mix >>> 0;
+      }
+      const checksum = new Uint8Array(8);
+      const checksumView = new DataView(checksum.buffer);
+      checksumView.setUint32(0, lastSwap ^ mix, true);
+      checksumView.setUint32(4, swapSum ^ mixSum, true);
+      return checksum;
+    }
+    function swapTerm(word, key, multipliers) {
+      const sum = Math.imul(word, key) + Math.imul(swapHalves(word), multipliers.swappedWord);
+      const product = Math.imul(swapHalves(sum), multipliers.swappedSum) >>> 0;
+      return Math.imul(swapHalves(product), multipliers.swappedProduct) + product >>> 0;
+    }
+    function swapAndMultiply(value, multipliers) {
+      for (const multiplier of multipliers) {
+        value = Math.imul(swapHalves(value), multiplier) >>> 0;
+      }
+      return value;
+    }
+    function swapHalves(value) {
+      return (value << 16 | value >>> 16) >>> 0;
+    }
+    function toUpperHex(bytes) {
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    }
+  }
+});
+
+// node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/MsEdgeTTS.js
 var require_MsEdgeTTS = __commonJS({
-  "node_modules/.pnpm/msedge-tts@2.1.0_debug@4.4.3/node_modules/msedge-tts/dist/MsEdgeTTS.js"(exports2) {
+  "node_modules/.pnpm/msedge-tts@2.1.1_debug@4.4.3/node_modules/msedge-tts/dist/MsEdgeTTS.js"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -22736,6 +22800,7 @@ var require_MsEdgeTTS = __commonJS({
     var fs = __importStar(require("node:fs"));
     var Prosody_1 = require_Prosody();
     var utils_1 = require_utils();
+    var SecMsGec_1 = require_SecMsGec();
     var MetadataOptions = class {
       /**
        * (optional) any voice locale that is supported by the voice. See the list of all voices for compatibility. If not provided, the locale will be inferred from the `voiceName`.
@@ -22765,7 +22830,7 @@ var require_MsEdgeTTS = __commonJS({
     var MsEdgeTTS2 = class _MsEdgeTTS {
       static TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
       static VOICES_URL = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=${_MsEdgeTTS.TRUSTED_CLIENT_TOKEN}`;
-      static WSS_URL = "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1";
+      static WSS_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
       static JSON_XML_DELIM = "\r\n\r\n";
       static AUDIO_DELIM = "Path:audio\r\n";
       static VOICE_LANG_REGEX = /\b[a-z]{2,}-[A-Z]{2}\b/;
@@ -22809,7 +22874,7 @@ var require_MsEdgeTTS = __commonJS({
       static async getSynthUrl() {
         const req_id = _MsEdgeTTS.generateUUID();
         const secMsGEC = await _MsEdgeTTS.generateSecMsGec(this.TRUSTED_CLIENT_TOKEN);
-        return `${this.WSS_URL}?Ocp-Apim-Subscription-Key=${this.TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGEC}&Sec-MS-GEC-Version=1-143.0.3650.96&ConnectionId=${req_id}`;
+        return `${this.WSS_URL}?TrustedClientToken=${this.TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGEC}&Sec-MS-GEC-Version=2-143.0.3650.96&ConnectionId=${req_id}`;
       }
       _initClient() {
         if (this._clientInit)
@@ -23002,10 +23067,7 @@ Path:${messageTypes.SPEECH_CONFIG}${_MsEdgeTTS.JSON_XML_DELIM}
         const ticks = Math.floor((Date.now() + _MsEdgeTTS._clockOffsetMs) / 1e3) + 11644473600;
         const rounded = ticks - ticks % 300;
         const windowsTicks = rounded * 1e7;
-        const encoder = new TextEncoder();
-        const data = encoder.encode(`${windowsTicks}${trustedClientToken}`);
-        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-        return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+        return (0, SecMsGec_1.hashSecMsGecV2)(`${windowsTicks}${trustedClientToken}`);
       }
       async _send(message, requestId, initialSocket) {
         let socket = initialSocket ?? this._ws;
