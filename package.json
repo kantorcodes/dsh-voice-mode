@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-mode",
-  "version": "0.7.30",
+  "version": "0.7.31",
   "description": "Repository root manifest for dsh-voice-mode. The plugin itself lives in plugin/dsh-voice-mode and is published to npm from there; this root manifest exists so the community plugin market (dsh-plugin.org) can identify the package name and version when scanning this repository.",
   "license": "MIT",
   "repository": {
