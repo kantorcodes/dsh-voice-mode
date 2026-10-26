@@ -1,5 +1,11 @@
 # dsh-plugin.org 市场收录提交（对应 GitHub Issue #18）
 
+> 状态：**审核已通过 · 收录全自动**（2026-10-26 18:07 CST）
+> - 提交 issue：`dshplugin/dsh-plugin-hub#452`（qishuilalala 于 2026-10-26 08:58 提交）
+> - 审核机器人 `dshplugin` 回复：**「收录流程全自动运行：提交由定期的仓库扫描统一拾取处理，你这边无需任何操作。这一条会在下一轮扫描中自动进入目录，并展示在 https://dsh-plugin.org」**，并确认「插件中心只展示能用 NPM 一键安装的插件」——本仓 npm 包已发布（latest 0.7.31），满足该条件。该 issue 随即被机器人关闭。
+> - 因此**不再需要人工操作**；剩余动作只是等下一轮扫描后核对条目页是否上线（`/plugins/qishuilalala/dsh-voice-mode`），上线后登记条目地址、给根 README 加市场徽章（徽章需先经用户同意）。
+> - 本机 PAT 对市场仓库只有读权限（无法代发评论/追问），若日后审核方另有提问，需由用户发布或给该仓库加 `issues: write` 权限。
+
 > 状态：**仓库侧要求已全部满足**（见下表）；最后一步「提交审核 issue」需人工点一次
 > ——本机 GitHub 凭据是 fine-grained PAT（`github_pat_…`），对 `dshplugin/dsh-plugin-hub`
 > 没有 `issues: write`，`gh issue create` 返回 `Resource not accessible by personal access token`

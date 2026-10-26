@@ -834,3 +834,11 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
   - **#18 已回帖**：收录要求逐条核对表（**仓库根 manifest 本轮补齐**，这是自动扫描的最后一个障碍）+ 预填链接与一条 `gh issue create` 命令（本机 fine-grained PAT 对市场仓库无 `issues: write`，与 #8250 同因）；提交件存 `docs/market-submission.md`。
   - **#15 已回帖（未关闭）**：汇总 0.7.28~0.7.31 与其十项反馈直接相关的修复（重点是 Edge 朗读再次失效这条用户很可能已撞上的），并列出仍未做的项（真全双工、纠错对比 UI、云端 ASR/乐观发送、热词、语义断句）；等用户确认后再关。
 - **仍未处理（留给后续窗口）**：本地 dsh 仍是 0.2.0-rc.2 而 npm latest 已是 0.2.1-rc.2（升级需重启 dsh.service，会杀掉当前会话）；桌面端 Electron 冒烟（rc.3 核心）待用户侧补跑；L4 真 LLM 待 DeepSeek 账户余额恢复后补跑；官方 discussion #8250 回帖仍需 classic token 或网页端。
+
+### 追加：插件市场收录（Issue #18）—— 审核通过，收录全自动（2026-10-26 18:07）
+
+- **提交**：`dshplugin/dsh-plugin-hub#452`（qishuilalala 提交，正文即 `docs/market-submission.md` 的收敛版）。
+- **审核结果**：机器人 `dshplugin` 回复「**收录流程全自动运行**：提交由定期的仓库扫描统一拾取处理，你这边无需任何操作。这一条会在下一轮扫描中自动进入目录」→ issue 随即被机器人关闭。**无需人工操作**。
+- **前置条件已满足**：npm 包已发布（`dsh-voice-mode` latest 0.7.31，机器人明确「插件中心只展示能用 NPM 一键安装的插件」）；仓库根 manifest 已在远端（`dsh-voice-mode 0.7.31 MIT`，自动扫描识别包名与版本用）；topic `dsh-plugin` 已在。
+- **剩余动作**：等下一轮扫描 → 核对条目页 `/plugins/qishuilalala/dsh-voice-mode` 是否 200 → 登记条目地址与日期到本文件与 `docs/market-submission.md` → 询问用户后给根 README 加市场徽章 → 停掉 10 分钟巡检。
+- **观察**：市场仓库近两天有 8+ 个同类提交（#437~#453），审核前普遍 0 评论、状态 open；机器人在 ~1 小时后批量处理（本次 08:58 提交 → 10:07 处理）。即**审核延迟约 1 小时，上架取决于扫描周期**。
