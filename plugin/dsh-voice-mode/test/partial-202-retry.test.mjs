@@ -184,10 +184,25 @@ await build({
 const { createAsrEngine } = await import(pathToFileURL(bundle).href)
 
 // ---------------------------------------------------------------- 驱动辅助
-const tick = () => new Promise((r) => setImmediate(r))
+// 让出方式：必须让出到 **timers 阶段**（realSetTimeout(0)），不能只用 setImmediate（check 阶段）——
+// 被压缩成 0ms 的重试定时器在事件循环繁忙时（发版门禁的高负载下实测）可能排在 setImmediate 之后
+// 迟迟不触发，导致「恢复后没有 200 请求」的间歇失败。
+const tick = () => new Promise((r) => realSetTimeout(r, 0))
 /** 让引擎异步链（fetch → 校验 → 发射）跑完。 */
 const settle = async (n = 20) => {
   for (let i = 0; i < n; i++) await tick()
+}
+/**
+ * 等到出现首个 200 请求再断言：**按条件等，不按 tick 数等**。
+ * 固定 tick 数等于把「机器有多快」写进断言——负载一高就假红（2026-10-26 发版门禁实测间歇失败）。
+ */
+const waitFor200 = async (maxTicks = 3000) => {
+  for (let i = 0; i < maxTicks; i++) {
+    const ok = hostCtl.reqs.find((r) => r.status === 200)
+    if (ok) return ok
+    await tick()
+  }
+  return null
 }
 const msToFrames = (ms) => Math.max(1, Math.round(ms / ((FRAME / SR) * 1000)))
 
@@ -249,7 +264,7 @@ await t('正常聆听：持续 202 → state=loading-model，恢复后首个成�
   hostCtl.p202 = false
   await say(AMP_A, 600)
   await settle(30)
-  const ok = hostCtl.reqs.find((r) => r.status === 200)
+  const ok = await waitFor200()
   assert.ok(ok, '恢复后应有成功 partial')
   assert.equal(ok.offset, 0, `恢复后首个成功 partial 须从 0 起传（实际 offset=${ok.offset}）——202 被当成功推进了水位，丢头`)
   await h.engine.stop()
@@ -268,7 +283,7 @@ await t('wake 待机：持续 202 → 仍为 wake，恢复后首个成功 partia
   hostCtl.p202 = false
   await say(AMP_A, 600)
   await settle(30)
-  const ok = hostCtl.reqs.find((r) => r.status === 200)
+  const ok = await waitFor200()
   assert.ok(ok, '恢复后应有成功 partial')
   assert.equal(ok.offset, 0, `wake 恢复后首个成功 partial 须从 0 起传（实际 offset=${ok.offset}）`)
   await h.engine.stop()
