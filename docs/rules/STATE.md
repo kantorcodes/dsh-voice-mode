@@ -820,3 +820,17 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **修复**：升 `msedge-tts 2.1.1`（上游 10-25 发布，端点回到 `speech.platform.bing.com/.../edge/v1` + `TrustedClientToken` + Sec-MS-GEC v2），重建 `lib/msedge-tts.cjs` 与第三方声明表；pnpm 最短发布年龄豁免已写明理由（同一发布者的补丁版，修的正是阻断性故障）。
 - **实测**：发布包内联产物真实合成一句中文成功（11232 字节 / 约 0.5 秒）；979 项单测、双 typecheck、notices/锚点/根 manifest 守卫全绿。
 - **方法论留痕**：这类「上游悄悄变更」只有靠**每日真实探针**才能提前暴露——本仓库的探针在服务端变更次日即报红，定位后 1 小时内出补丁版。探针本身不改业务代码，是这条链路里最便宜的一环。
+
+### 收尾：两个发版（v0.7.30 / v0.7.31）+ 三个 issue 的处置结果（2026-10-26 收官）
+
+- **v0.7.30**（兼容 rc.3 + 探针修复 + 市场根 manifest）：npm latest ✓、tag `v0.7.30` ✓、GitHub Release ✓、CI ✓。
+- **v0.7.31**（Edge 朗读修复）：npm 0.7.31 ✓（**用 registry 真实 tarball 实测 Edge 合成成功 16416 字节**）、tag `v0.7.31` ✓、GitHub Release ✓、CI ✓。
+- **发版工具链缺陷（本机脚本，gitignored）**：`release.sh` 的 npm 传播等待窗口原为 6×10s=60s，而实测传播要 1.5~2.5 分钟 → **连续两次发版都卡在这一步**，导致 tag 与 GitHub Release 需手工补做。已放宽到 30×10s=5 分钟。
+- **间歇测试失败的完整证据链（同一根因、三次命中）**：
+  ① 本机发版门禁 `npm test` 抓到 `partial-202-retry` 断言失败；② GitHub 的 v0.7.30 Release workflow 在同一断言上失败（Node 24 runner）；③ 修法为「按条件等（等首个 200 请求出现）而非按固定 tick 数等」+ 让出走 timers 阶段——断言语义不变（恢复后必须有成功 partial 且 offset=0），只是不再把「机器有多快」写进断言。修后本机高负载（4 倍 CPU 占用）15/15 通过、全量 79 套件在高负载下 exit 0、CI 绿。
+  **教训**：固定 tick 数的等待 = 把机器速度写进断言；这类测试装置缺陷在「版本回归」面前极具误导性——必须先看**对照组**（rc.2 同样失败）再下结论。
+- **本轮对外沟通（三个 issue）**：
+  - **#19 已关闭**：贴四步验证证据（锚点 9/9、双 typecheck、冒烟 16/16 连跑 3 次、L4 环境性失败说明）+ rc.2→rc.3 静态差量与两处宿主行为变化 + 探针修复说明。
+  - **#18 已回帖**：收录要求逐条核对表（**仓库根 manifest 本轮补齐**，这是自动扫描的最后一个障碍）+ 预填链接与一条 `gh issue create` 命令（本机 fine-grained PAT 对市场仓库无 `issues: write`，与 #8250 同因）；提交件存 `docs/market-submission.md`。
+  - **#15 已回帖（未关闭）**：汇总 0.7.28~0.7.31 与其十项反馈直接相关的修复（重点是 Edge 朗读再次失效这条用户很可能已撞上的），并列出仍未做的项（真全双工、纠错对比 UI、云端 ASR/乐观发送、热词、语义断句）；等用户确认后再关。
+- **仍未处理（留给后续窗口）**：本地 dsh 仍是 0.2.0-rc.2 而 npm latest 已是 0.2.1-rc.2（升级需重启 dsh.service，会杀掉当前会话）；桌面端 Electron 冒烟（rc.3 核心）待用户侧补跑；L4 真 LLM 待 DeepSeek 账户余额恢复后补跑；官方 discussion #8250 回帖仍需 classic token 或网页端。
