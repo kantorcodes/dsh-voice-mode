@@ -47,12 +47,27 @@ if (root.name !== plugin.name) problems.push(`name：根=${root.name} 插件=${p
 if (root.version !== plugin.version) problems.push(`version：根=${root.version} 插件=${plugin.version}`)
 if (root.license !== plugin.license) problems.push(`license：根=${root.license} 插件=${plugin.license}`)
 if (!root.scripts?.prepublishOnly) problems.push('根 manifest 缺少 prepublishOnly 守卫（防止在根目录误发布）')
+// 根 manifest 还镜像了插件的宿主契约与入口，市场扫描器据此判定「这是一个 DSH 插件」
+// （实测：已收录插件的根 manifest 均带 dsh 段与 main）。镜像字段必须与插件 manifest 一致，否则会漂移。
+if ((root.engines?.dsh ?? null) !== (plugin.engines?.dsh ?? null)) {
+  problems.push(`engines.dsh：根=${root.engines?.dsh ?? '(缺)'} 插件=${plugin.engines?.dsh ?? '(缺)'}`)
+}
+if (root.type !== plugin.type) problems.push(`type：根=${root.type} 插件=${plugin.type}`)
+const rootInject = root.dsh?.client?.inject ?? []
+const pluginInject = plugin.dsh?.client?.inject ?? []
+if (JSON.stringify([...rootInject].sort()) !== JSON.stringify([...pluginInject].sort())) {
+  problems.push(`dsh.client.inject 不一致：根=${rootInject.length} 项 插件=${pluginInject.length} 项`)
+}
+if (root.main) {
+  const mainPath = join(repoRoot, root.main)
+  if (!existsSync(mainPath)) problems.push(`main 指向的文件不存在：${root.main}`)
+}
 
 if (problems.length > 0) {
   console.error('✗ 根 manifest 与插件 manifest 不一致：')
   for (const p of problems) console.error(`  - ${p}`)
-  console.error('  修法：同步两份 manifest 的 name/version/license 后重试。')
+  console.error('  修法：同步两份 manifest 的 name/version/license/engines.dsh/type/dsh.client.inject 后重试。')
   process.exit(1)
 }
 
-console.log(`✓ 根 manifest 与插件 manifest 一致（${root.name}@${root.version}）`)
+console.log(`✓ 根 manifest 与插件 manifest 一致（${root.name}@${root.version}，注入锚点 ${rootInject.length} 项）`)
