@@ -782,3 +782,33 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **验真轮的判断（不定为缺陷的依据）**：打断时客户端已 `skipAudio()`（`playing` 归零）+ `cancelTurn()`（`running` 归零），方向与「用户确实打断了这一轮」一致；未找到「非打断却被提前退出」的可达路径。两个方法的语义确为正交互不覆盖（前者只碰 `openTurns`、后者只碰 pending/在途），无先后依赖。
 - **需要产品拍板的那一问**：`mode:once` 下，**用户手动打断后继续说话**时，客户端是否仍应留在语音模式？即「回合被用户打断而结束」是否应当等同于「说完就关」的收尾条件。若答案是「否」，则需要一处显式区分（打断收尾 vs 自然读完收尾），而不是依赖当前这个「恰好方向正确」的组合效应。
 - **状态**：**只登记，未改代码**。相关行为锁见 `test/host-security-behavior.test.mjs` ⑫ 段（`reason='interrupt'` 合闸门 / `stop-reading` 不合 / 缺省不合）与 `test/tts-queue-engine.test.mjs` 的 `abandonTurn` 用例。
+
+---
+
+## 任务：Issue #19（0.2.1-rc.3 未覆盖）四步验证 + 矩阵/声明同步 + v0.7.30 发版 —— **验证全绿并已发版（2026-10-26）**
+
+### 触发与范围
+
+- **触发**：CI 巡检 workflow（`dsh upstream version check`）2026-10-26 02:40 UTC 自动开 issue #19「有未覆盖版本 0.2.1-rc.3」并让 job 失败（上游 `next=0.2.1-rc.3`，发布于 10-23 07:54Z）。
+- **本会话同时处理**：issue #18（插件市场收录）、issue #15（跟进回帖）；三件事共用同一批改动，一次发版 v0.7.30 收口。
+
+### #19 四步验证结果（证据在 `docs/compat-contract.md` §22）
+
+- L1 锚点 **9/9**（`check-anchors.mjs 0.2.1-rc.3`）；L2 双 typecheck **全过**（cordis 映射补 `0.2.1-rc.3 → 4.0.5`，`npm view` 实证）；L3 runtime 冒烟 **16/16 且连跑 3 次全绿**。
+- **探针缺陷（非版本回归）已修**：① rc.3 起「Account menu」按钮只剩 `aria-label`（中文「账号菜单」），文本匹配失配 → 改按 `aria-label` 查找；② 未认证 profile 的登录门**异步弹出**挡住侧栏点击 + 卡片异步渲染 → 关门改轮询、卡片改轮询 + 路径重试 3 轮。修后 rc.2 对照组同样全绿。
+- **L4 真 LLM 未完成且已定位根因**：rc.3 与 **rc.2 对照组同样 0 音频帧**（排除版本回归）→ 直查 `api.deepseek.com` 返回 **HTTP 402 `Insufficient Balance`**（本机 `/root/.env` 的 DeepSeek 账户余额不足；密钥值不落盘）→ 属凭据侧问题，L4 待密钥恢复后补跑。**这是本轮最重要的「不误判」记录**：无对照组时极易把环境问题误判成新版本回归。
+- **未跑层**：桌面端 Electron 冒烟（无桌面环境，已登记真机项）；L4 真实语音闭环（本机无 VITS/zipformer 模型缓存）。
+
+### 本轮改动清单
+
+- 矩阵：`verify-dual.sh` 17→18 版锚点/typecheck、14→15 核心冒烟（新增 rc.3，端口 3149）；`check-dsh-version.sh --check` 恢复 exit 0；CI typecheck 矩阵加 `0.2.1-rc.3`。
+- 声明同步：插件 manifest 的 description 字段、根/插件中英 README、`CONTEXT.md`、`docs/compat-contract.md` §22、`CHANGELOG.md` 0.7.30 段。
+- **#18 插件市场**：仓库根新增一份 manifest（市场收录要求：根 manifest 写明包名与版本；带 `prepublishOnly` 防误发）+ 新增机械守卫 `scripts/check-root-manifest.mjs`（根/插件 manifest 的 name/version/license 必须一致）并接进 CI 与发版门禁；`release.sh` 白名单补根 manifest 且发版时同步 bump 根版本。
+- **测试装置**：`smoke-settings.mjs` 三处（Account menu 按 aria-label、登录门轮询关闭、卡片轮询 + 路径重试）。插件 `src/` 与 `lib/` **零改动**。
+
+### 遗留（未做/待补，如实登记）
+
+- **本地 dsh 仍为 0.2.0-rc.2，而 npm `latest` 已是 0.2.1-rc.2**：升级宿主需 `systemctl restart dsh.service`，而本会话正跑在 dsh web（3018）上，重启会杀掉本会话 → 本轮不做，交专门窗口按 `~/.dsh/docs/UPGRADES.md` SOP 升级（注意：0.2.1-rc.2 起 `engines.dsh` 单独硬校验，插件上界已是 `<0.3.0-0`，兼容）。
+- 官方 discussion #8250 回帖：仍需 classic token 或用户网页端发（fine-grained PAT 无权）。
+- 市场收录需审核：提交 issue 到 `dshplugin/dsh-plugin-hub` 后等收录刷新（站点自述「通常一轮刷新周期内」）。
+- 桌面端 Electron 冒烟（0.2.1-rc.3 核心）交用户侧补跑。

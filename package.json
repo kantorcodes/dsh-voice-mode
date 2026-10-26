@@ -1,0 +1,24 @@
+{
+  "name": "dsh-voice-mode",
+  "version": "0.7.29",
+  "description": "Repository root manifest for dsh-voice-mode. The plugin itself lives in plugin/dsh-voice-mode and is published to npm from there; this root manifest exists so the community plugin market (dsh-plugin.org) can identify the package name and version when scanning this repository.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qishuilalala/dsh-voice-mode.git"
+  },
+  "homepage": "https://github.com/qishuilalala/dsh-voice-mode#readme",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "voice",
+    "asr",
+    "tts",
+    "barge-in",
+    "full-duplex"
+  ],
+  "scripts": {
+    "prepublishOnly": "node -e \"console.error('不要在仓库根目录发布：npm 包在 plugin/dsh-voice-mode 下发布。'); process.exit(1)\""
+  }
+}

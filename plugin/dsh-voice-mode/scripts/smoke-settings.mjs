@@ -57,11 +57,23 @@ async function openSettings(pg, directClick) {
     return true
   } catch {}
   // 新路径（0.2.1-alpha.4/5+）：Account menu → Settings。先 Escape 关掉可能开着的 More 菜单，再关登录门。
+  // 注意：0.2.1-rc.3 起「Account menu」按钮不再有同名可见文本（只剩 aria-label，按钮内是账户名/头像），
+  // getByText 匹配不到 → 必须按 aria-label 查找（0.2.1-rc.2 及更早两处都有，故对旧宿主无回归）。
   try {
     await pg.keyboard.press('Escape').catch(() => {})
     await pg.waitForTimeout(400)
     await dismissSignInGate()
-    await pg.getByText(/^(Account menu|账户菜单)$/).first().click({ timeout: 2000 })
+    const opened = await pg.evaluate(() => {
+      // 中文界面下官方 aria-label 是「账号菜单」（不是「账户菜单」），两个都覆盖。
+      const rx = /^(Account menu|账户菜单|账号菜单)$/i
+      const e = Array.from(document.querySelectorAll('button,[role=button]')).find((x) => {
+        const t = (x.getAttribute('aria-label') || x.textContent || '').trim()
+        return t && rx.test(t)
+      })
+      if (e) { e.click(); return true }
+      return false
+    })
+    if (!opened) return false
     await pg.waitForTimeout(800)
     await pg.getByText(/^(Settings|设置)$/).first().click({ timeout: 2000 })
     return true
@@ -75,22 +87,41 @@ async function dismissOnboarding() {
   }
 }
 // 0.2.1-alpha.4/5 起：未认证 profile 在引导后弹出可关闭的登录门（Get started / Sign in，× 按钮 aria-label=Close）。
-// 不关掉会挡住后续 Settings 导航（Account menu 路径）。幂等：无门时零动作。
+// 不关掉会挡住后续 Settings 导航（Account menu 路径）与侧栏点击。幂等：无门时零动作。
+// 门是**异步弹出**的（实测：在 dismissSignInGate 之后数百毫秒才出现），故这里轮询等待它出现并关闭，
+// 而不是「看一眼没有就退出」。
 async function dismissSignInGate() {
-  for (let i = 0; i < 3; i++) {
-    const closed = await page.evaluate(() => {
+  const deadline = Date.now() + 8000
+  let miss = 0
+  for (;;) {
+    const state = await page.evaluate(() => {
       const d = document.querySelector('[role="dialog"]')
-      if (!d) return false
-      if (!/get started|sign in|log in|登录/i.test(d.innerText || '')) return false
+      if (!d) return { present: false, closed: false }
+      if (!/get started|sign in|log in|登录/i.test(d.innerText || '')) return { present: false, closed: false }
       const x = Array.from(d.querySelectorAll('button,[role=button]')).find((b) => /^(close|关闭)$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()))
-      if (x) { x.click(); return true }
-      return false
+      if (x) { x.click(); return { present: true, closed: true } }
+      return { present: true, closed: false }
     })
-    if (!closed) break
-    await page.waitForTimeout(600)
+    if (state.closed) { miss = 0; await page.waitForTimeout(500); continue }
+    if (!state.present) {
+      // 连续 1.5s 都没有门出现才算稳（门一出现就关，故这里只等它「不再出现」）
+      miss++
+      if (miss >= 3 || Date.now() >= deadline) return
+    }
+    await page.waitForTimeout(500)
   }
 }
 const hasCard = () => page.evaluate(() => !!document.querySelector('[data-dshvm-settings="card"]'))
+// 卡片是异步渲染的（插件列表→详情页→卡片展开），固定等待会偶发抢跑（2026-10-26 在 0.2.1-rc.3 上实测：
+// 一次跑通、一次「找不到设置卡片」）。改为在上限内轮询，命中即走。
+async function waitForCard(ms = 8000) {
+  const deadline = Date.now() + ms
+  for (;;) {
+    if (await hasCard()) return true
+    if (Date.now() >= deadline) return false
+    await page.waitForTimeout(300)
+  }
+}
 
 // 在页面内取当前设置快照（0.1.7+ 走插件端点；旧宿主端点只读，也可读）
 const getSettings = () => page.evaluate(async () => {
@@ -117,25 +148,32 @@ try {
   await dismissSignInGate()
 
   // 1) 找到卡片：先走 0.1.7+ 入口（Plugins 页 → 已安装插件详情），再退到 ≤0.1.6 入口（Settings → Plugins）
+  // 间歇失败的两个已知来源（2026-10-26 在 0.2.1-rc.3 上实测复现，~60% 命中率）：
+  //   ① 未认证 profile 的登录门是**异步弹出**的：它在 dismissSignInGate 之后才出现，挡住侧栏点击 →
+  //      「Plugins 点不到 → 找不到设置卡片」；② 插件列表→详情页→卡片是异步渲染的，固定等待会抢跑。
+  // 故：每次尝试前重新关门（并轮询等门出现再关），卡片用轮询等待，整条路径重试若干轮。
   let route = null
-  if (await clickText(/^plugins$/i)) {
-    await page.waitForTimeout(1200)
-    if (await clickText(/voice[- ]mode|语音模式/i)) {
-      await page.waitForTimeout(1500)
-      if (await hasCard()) route = 'plugin-detail'
+  for (let attempt = 0; attempt < 3 && !route; attempt++) {
+    await dismissOnboarding()
+    await dismissSignInGate()
+    if (attempt > 0) { await page.goto(url, { waitUntil: 'load' }); await page.waitForTimeout(1500) }
+    if (await clickText(/^plugins$/i)) {
+      await page.waitForTimeout(1200)
+      if (await clickText(/voice[- ]mode|语音模式/i)) {
+        if (await waitForCard()) route = 'plugin-detail'
+      }
     }
   }
-  if (!route) {
+  for (let attempt = 0; attempt < 3 && !route; attempt++) {
     await page.goto(url, { waitUntil: 'load' })
     await page.waitForTimeout(1500)
     await dismissOnboarding()
     await dismissSignInGate()
-  await dismissSignInGate()
     if (await openSettings(page, () => clickText(/^settings$/i))) {
       await page.waitForTimeout(1200)
       await clickText(/^plugins$/i, '[role=dialog] button,[role=dialog] [role=tab],[role=dialog] a,[role=dialog] li')
       await page.waitForTimeout(1200)
-      if (await hasCard()) route = 'settings-plugins'
+      if (await waitForCard()) route = 'settings-plugins'
     }
   }
   if (!route) { bad('找不到设置卡片（Plugins 详情页与 Settings→Plugins 两处均无）'); throw new Error('no-card') }

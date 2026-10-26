@@ -701,3 +701,33 @@ class AgentDefaultModelConfig extends Service {
 - **已落地（v0.7.29）**：engines.dsh 改为 `">=0.1.1-rc.2 <0.3.0-0"`（package.json + 中英 README + CONTEXT 同步）；`test/verify-client.mjs` 锁定上界写法。
 - **发布门禁（机械化）**：① check-build-tag 脚本——入库 lib 客户端产物里的 BUILD_TAG 必须是被检出提交的祖先，且其后 src 与构建脚本无改动（解决 v0.7.26/27/28 tag 内 lib 落后一行的系统性缺陷）；只在 release.yml 的 build 之前跑（checkout `fetch-depth: 0`）；不进逐提交 CI——本仓惯例「先提交 src、再单独提交重建产物」，逐提交校验会让中间提交误红。② check-notices-versions 脚本——第三方声明表的包版本必须与 pnpm 锁文件解析版本一致（已修 follow-redirects 1.16.0 → 1.16.1）。③ CI 跑 typecheck 矩阵（0.1.1-rc.2 / 0.1.5-rc.1 / 0.2.0-rc.2 / 0.2.1-rc.2，`scripts/typecheck-dual.sh`），且与 release.yml 同样 `pnpm install --frozen-lockfile` 按锁文件安装（2026-10-23 v0.7.29 后补齐）。
 - **正典发布流程**：提交源码 → `node build.mjs`（BUILD_TAG = 该提交）→ 提交 lib → 在 lib 提交上打 tag；两者之间不得再改 src，否则上述门禁红。
+
+## 22. 0.2.1-rc.3 复核（2026-10-26，CI 巡检 issue #19 触发的四步验证）
+
+- **发现途径**：周一 CI 巡检（`dsh upstream version check`，2026-10-26 02:40 UTC）比对上游 dist-tags，发现 `next=0.2.1-rc.3` 不在本仓库覆盖矩阵内，自动开 issue #19「dsh upstream: 有未覆盖版本 0.2.1-rc.3」并让 job 失败。
+- **上游事实**（npm registry `time` 实证）：`0.2.1-rc.3` 发布于 **2026-10-23 07:54Z**；dist-tags 现为 `alpha=0.2.1-alpha.5 / next=0.2.1-rc.3 / latest=0.2.1-rc.2`（`latest` 自 10-17 起即 rc.2，未变）。
+- **依赖面**（`npm view @deepseek-ai/dsh-*-@0.2.1-rc.3 peerDependencies` 实证）：`dsh-host-webserver` / `dsh-llm` / `dsh-settings` / `dsh-system-prompt` 的 cordis 对等依赖均为 **`~4.0.5`**（与 rc.2 同档，非 alpha 线）；`dsh-settings` / `dsh-system-prompt` 另钉 `dsh-brand` / `dsh-session` / `dsh-scope` / `dsh-llm` 为 `0.2.1-rc.3`。
+- **静态差量（rc.2 → rc.3，隔离核心逐包 diff，排除各包的清单文件与 .bin）**：22 个包有代码差异，集中在**账号与模型链路**（`dsh-llm-deepseek` / `-account` / `-api-key`、`dsh-client-product-analytics`、`dsh-api-account-controller`）与**界面增强**（`dsh-client-ui-sidebar` 新增 `PanelMoreMenu` 与 panel pins、`dsh-client-ui-conversation`、`dsh-client-ui-plugin-manager`、`dsh-client-ui-workspace`、`dsh-web-frontend`）。**与本插件直接相关的设置类前端包代码零差异**：`dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-layout` 三者仅包清单（name/version 字段）与 `node_modules/.bin` 差异（文件内容逐字节相同）→ 设置弹窗、插件详情页、槽位契约均未变。
+- **宿主行为变化（只有真跑才会暴露的那类）**：侧栏面板列表新增 **「More」面板菜单**（`sidebar.panellist.actions` 槽位），实测其内容是插件市场入口（`Browse other plugins` / `Create your plugin`）——**它不是旧路径里的那个「More → Settings」菜单**。因此「More」路径在 rc.3 上不再通向设置；设置入口仍是「Account menu → Settings」，但该按钮**在 rc.3 起不再有同名可见文本**（只剩 `aria-label`，英文 `Account menu` / 中文 `账号菜单`），文本匹配型探针会失配。
+- **本插件两处入口在 rc.3 上均实测可用**（headless chromium 实证）：插件详情页卡片入口（Plugins → dsh-voice-mode → 设置卡片，`aria-expanded=true`）、设置弹窗专属页（Account menu → Settings → Voice Mode 专属页，双语卡片均正确、无中英混排、写入与刷新保留均通过）。
+
+### 四步验证结果（2026-10-26，对当前源码构建）
+
+| 层 | 0.2.1-rc.3 | 证据 |
+|---|---|---|
+| L1 锚点（9 个 `dsh.client.inject` 包） | ✅ 9/9 | `node scripts/check-anchors.mjs 0.2.1-rc.3` |
+| L2 双 typecheck（host + client） | ✅ 全过 | `bash scripts/typecheck-dual.sh 0.2.1-rc.3`（cordis 映射表补 `0.2.1-rc.3 → 4.0.5`） |
+| L3 runtime 冒烟（host 三端点 + mic 双语渲染 + 右键菜单 9 项 + console 0 error + 设置卡片 16 断言） | ✅ 16/16 | `bash scripts/smoke-runtime.sh <rc.3 bin.js>`，**连跑 3 次全绿**（修探针后） |
+| L4 真 LLM 端到端（create→toggle→prompt→SSE 音频帧 + tts-error=0） | ❌ **环境性失败**（rc.3 与 rc.2 对照组同样 0 帧） | `bash scripts/full-e2e.sh <rc.3 bin.js>`：RPC 三步（create/toggle/prompt）均 `ok:true`、`accepted:true`，但 SSE 音频帧 0、回复正文为空 |
+
+### 冒烟脚本适配（测试装置变更，插件 `src/` 与 `lib/` 零改动）
+
+- **① Account menu 按 `aria-label` 查找**：rc.3 起该按钮无同名可见文本，`getByText(/^(Account menu|账户菜单)$/)` 匹配数为 0 → 「Settings → 语音模式 专属页」与英文/中文卡片断言全部落空。改为按 `aria-label` 查找，并覆盖中文标签 `账号菜单`（实测 rc.3 中文界面用的就是「账号菜单」，不是「账户菜单」）。
+- **② 登录门异步弹出 → 轮询关闭 + 卡片轮询 + 路径重试**：未认证 profile 的登录门（Get started / Sign in）**在 `dismissSignInGate` 之后数百毫秒才出现**，会挡住侧栏点击；叠加「插件列表→详情页→卡片」的异步渲染，表现为**间歇性**「找不到设置卡片」（在 rc.3 上实测命中率约 60%）。改为：关门改为轮询等待其出现并关闭、卡片改为上限内轮询、整条卡片查找路径重试 3 轮。修后 rc.3 连跑 3 次全量冒烟均全绿，rc.2 对照组同样全绿（无旧宿主回归）。
+- **③ 该间歇失败与 rc.3 无关**：在 rc.2 对照组上以同一脚本同样可复现（此前 §20 记录的 alpha.5 设置卡片探针 3/3 失败，很可能是同一族问题而非版本回归）——故按「探针缺陷」处置，不动插件代码。
+
+### 遗留（未跑层，如实登记）
+
+- **L4 真 LLM 端到端本轮无法完成——环境/凭据侧原因，与版本无关**：rc.3 上跑 `full-e2e.sh` 得「RPC 三步全 ok、accepted:true，但 SSE 音频帧 0、回复正文为空」；**rc.2 对照组用同一脚本、同一凭据得到完全相同的结果**（排除版本回归）。根因直查到位：隔离 profile 使用的 `DEEPSEEK_API_KEY`（取自 `/root/.env`）直连 `api.deepseek.com` 返回 **HTTP 402 `Insufficient Balance`**（2026-10-26 实测，密钥值不落盘/不进文档）→ **L4 仍为未覆盖层**，待密钥恢复后补跑 rc.3。
+- **L4 真实语音闭环（`DSHVM_VOICE_LOOP=1`）未跑**：需本机已缓存 VITS/zipformer 模型（实测本机无模型缓存，缺失时会触发数百 MB 下载）。
+- **桌面端 Electron 冒烟（真 Electron + Xvfb / Windows 宿主）未跑**：本服务器无桌面环境，沿用历史先例登记到 `docs/qa/must-verify-manually.md`，交用户侧补跑（0.2.1-rc.3 核心）。

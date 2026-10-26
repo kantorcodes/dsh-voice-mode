@@ -5,6 +5,29 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.30] - 2026-10-26
+
+### 兼容 dsh 0.2.1-rc.3（next 通道，CI 巡检 issue #19 触发）
+
+- **覆盖矩阵扩到 18 版锚点 / 18 版双 typecheck / 15 个隔离核心 runtime 冒烟**（新增 `0.2.1-rc.3`）。本插件两处设置入口在 rc.3 上实测均可用：插件详情页卡片（Plugins → dsh-voice-mode → 设置卡片，默认展开）与设置弹窗专属页（Account menu → Settings → Voice Mode 专属页，中英双语卡片、无中英混排、写入与刷新保留均通过）。实证见 `docs/compat-contract.md` §22。
+- **上游 rc.3 的两处界面变化（对本插件无影响，但影响自动化探针）**：侧栏面板列表新增「More」面板菜单（内容是插件市场入口，**不再**通向设置）；侧栏「Account menu」按钮改为只带 `aria-label`（英文 `Account menu`、中文「账号菜单」），没有同名可见文本。
+- `typecheck-dual.sh` 的 cordis 映射补 `0.2.1-rc.3 → 4.0.5`（`npm view` 对等依赖实证，与 rc.2 同档）；CI 的 typecheck 矩阵加 `0.2.1-rc.3`。
+
+### 冒烟探针修复（测试装置变更，插件 `src/` 与 `lib/` 零改动）
+
+- **「Account menu」改按 `aria-label` 查找**（含中文「账号菜单」）：rc.3 起该按钮没有同名可见文本，文本匹配型探针会误判「设置入口丢失」。
+- **登录门改为轮询关闭 + 设置卡片改为轮询等待 + 卡片查找路径重试**：未认证 profile 的登录门是**异步弹出**的（会挡住侧栏点击），叠加插件列表→详情页→卡片的异步渲染，会出现**间歇性**「找不到设置卡片」。修后 rc.3 连跑 3 次全量冒烟全绿，rc.2 对照组同样全绿。
+
+### 插件市场收录准备（对应 issue #18）
+
+- **仓库根新增一份 manifest**（只写 `name` / `version` / `license` 等身份字段）：社区插件市场 dsh-plugin.org 的收录要求写着「仓库根目录需包含 manifest（写明插件包名与版本），否则无法通过自动扫描」。根 manifest 只承担「包名 + 版本」的身份声明，真正的 npm 包仍在 `plugin/dsh-voice-mode` 发布（根 manifest 带 `prepublishOnly` 守卫，防止误在根目录发布）。
+- **新增机械守卫 `scripts/check-root-manifest.mjs`**：根 manifest 的 name/version/license 必须与插件 manifest 一致（并要求 `prepublishOnly` 守卫存在），已接进 CI 与发版门禁——防止两份 manifest 漂移后市场展示的版本与 npm 上的实际版本对不上。
+
+### 本轮已知缺口（如实登记，未掩盖）
+
+- **L4 真 LLM 端到端本轮未完成**：rc.3 上 RPC 三步全 `ok`、prompt `accepted:true`，但 SSE 音频帧 0、回复正文为空；**rc.2 对照组用同一脚本、同一凭据结果完全相同**（排除版本回归）。根因直查到位：本机隔离 profile 使用的 `DEEPSEEK_API_KEY` 直连 `api.deepseek.com` 返回 **HTTP 402 `Insufficient Balance`**（密钥值不落盘）——属凭据/账户侧问题，L4 待密钥恢复后补跑。
+- **桌面端 Electron 冒烟未跑**（本服务器无桌面环境），已登记到 `docs/qa/must-verify-manually.md` 交用户侧补跑（0.2.1-rc.3 核心）。
+
 ## [Unreleased]
 
 ### 规划中
