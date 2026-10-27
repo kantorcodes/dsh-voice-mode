@@ -82,6 +82,25 @@ README 首屏为功能图与真实截图，仓库含 `assets/` 与 `screenshots/
 - [x] 仓库根目录包含 package.json
 ```
 
+## 催问稿（若下一轮扫描仍未收录，用这个再开一条 issue）
+
+> 触发条件：#452 已被机器人通过，但**目录条目数 12 小时未变**（27,884）、条目页持续 404，
+> 且同期其他提交（如 #441/#442/#448，含 @dyguests/dsh-sketch）也都没被收录 → 站点扫描未跑，
+> 而非我们仓库不合规。届时在 `dshplugin/dsh-plugin-hub` 新开一条 issue 发以下内容
+> （需用户账号发布——本机 PAT 对该仓库只有读权限）。
+
+```markdown
+### 催问：#452 已审核通过，但目录里还看不到条目
+
+提交 issue #452（[插件提交] qishuilalala/dsh-voice-mode）已于 2026-10-26 被机器人确认「收录流程全自动运行，下一轮扫描自动进入目录」。
+
+但截至目前（提交后约 1 天），https://dsh-plugin.org/zh/plugins/qishuilalala/dsh-voice-mode 仍返回 404，全站目录条目数在观察窗口内没有变化（同期其他提交也未见收录），看起来是扫描还没跑到这一批。
+
+仓库侧要求已逐条核对：公开仓库 ✓、topic `dsh-plugin` ✓、README 含 `dsh plugin --profile web add dsh-voice-mode` ✓、导出 `apply(ctx)` ✓、根 manifest（name/version/dsh.client.inject/main/engines.dsh）✓、npm 包 `dsh-voice-mode`（latest 0.7.31）✓、MIT ✓、截图与权限说明 ✓。
+
+请问能否在下一轮扫描时一并处理，或告知我们还需要补什么？感谢。
+```
+
 ## 收录后
 
 - 把市场条目地址回填到本文件「状态」段与根 README（可选加收录徽章，站点提供
