@@ -849,3 +849,11 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **未上线原因**：站点目录条目数自 2026-10-26 23:30 起停在 27,884 未变（同期其他提交 #441/#442/#448 也均未收录、市场自家条目页最新日期同样停在 10-26）→ **站点扫描未跑**，非本仓不合规。本仓四项硬要求已逐条核实：公开仓库、topic `dsh-plugin`、README 安装命令、导出 `apply(ctx)`、根 manifest（name/version/`dsh.client.inject`/main/`engines.dsh`）、npm 包 `dsh-voice-mode`（latest 0.7.31）。
 - **催问稿位置**：`.scratch/market/market-submission.md`（**本机专用，不入库**；公开仓库不留流程稿）。
 - **公开口径纪律（维护者 2026-10-27 指示）**：对外 issue 回复一律**简短、客气、专业、客观**——只给结论与入口，细节指向仓库文档（兼容实证见 `docs/compat-contract.md` §22）；内部过程信息（凭据/账户状态、测试抖动过程、本机操作细节）**不外发**。
+
+### 追加：宿主 dsh 升级 0.2.0-rc.2 → 0.2.1-rc.2（2026-10-27 14:5x 执行，会重启服务、中断当前会话）
+
+- **执行方式**：`systemd-run` 独立单元跑 `/mnt/work/upgrade-dsh-021rc2.sh`（脱离 dsh.service cgroup，服务重启不影响脚本）；日志 `/mnt/work/upgrade-dsh-021rc2.log`，状态 `/mnt/work/upgrade-dsh-021rc2.status`（OK / ROLLBACK_OK / ROLLBACK_FAILED）。
+- **回滚基线**：全局包 tar `/mnt/work/dsh-0.2.0-rc.2-pre-rollback-<STAMP>.tar.gz`；profile tar + settings/cordis/sessions/storages/插件覆盖层在 `/home/www/.dsh/backups/pre-0.2.1-rc.2-<STAMP>/`。
+- **同步升级的 profile 插件**（宿主 0.2.1 起 engines.dsh 单独硬校验、peer 范围收紧）：dsh-voice-mode 0.7.28→**0.7.31**、dshmarket 1.66.22→1.71.1、dsh-better-sidebar 0.26.1→0.28.1、@deepseek-ai/dsh-client-ui-sidebar-documentpreview 0.2.0-rc.2→0.2.1-rc.2；dsh-opencode-session 保持 0.1.1（无版本约束）。
+- **站点补丁**：`/mnt/work/dsh-site-patch-settings-remote/patch.sh` 需在新版 bundle 上重放；脚本另加一步扫描 patch.sh 未收录的新形态（isLoopback 分支）以免静默失效。
+- **恢复点（会话被中断后按此续）**：① `cat /mnt/work/upgrade-dsh-021rc2.status` 看结果；② `dsh --version` 应为 0.2.1-rc.2；③ `curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3018/voice-mode` 应 200，`/voice-mode/config` 与 `/voice-mode/settings` 也应 200（证明插件未被 engines.dsh 拒载）；④ profile 内 dsh-voice-mode 应为 0.7.31；⑤ 失败则脚本已自动回滚（status=ROLLBACK_OK/FAILED），按日志尾部处理。⑥ 升级后需复核 `docs/compat-contract.md` §22 与 0.2.1-rc.2 的实测结论是否需要补记。
