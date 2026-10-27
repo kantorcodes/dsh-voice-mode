@@ -847,6 +847,7 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 
 - **审核已通过**：`dshplugin/dsh-plugin-hub#452` 于 2026-10-26 18:07 被机器人确认「收录流程全自动运行，下一轮扫描自动进入目录」并关闭；**无需人工操作**。
 - **未上线原因**：站点目录条目数自 2026-10-26 23:30 起停在 27,884 未变（同期其他提交 #441/#442/#448 也均未收录、市场自家条目页最新日期同样停在 10-26）→ **站点扫描未跑**，非本仓不合规。本仓四项硬要求已逐条核实：公开仓库、topic `dsh-plugin`、README 安装命令、导出 `apply(ctx)`、根 manifest（name/version/`dsh.client.inject`/main/`engines.dsh`）、npm 包 `dsh-voice-mode`（latest 0.7.31）。
+- **2026-10-28 03:30 巡检结论**：站点扫描**确实在 10-27 跑过**（sitemap 末页 lastmod 已到 10-27），但目录总数由 27,884 **降到 27,860**（净清 24 条，非新增），且 **10-26 那批提交无一被收录**——`dyguests/dsh-sketch`（无 topic，issue 通道）、`Libraqg/ultra-documents`（有 topic + 根 manifest 带 dsh 段 + main）、`Libraqg/dsh-workspace-memory`（有 topic + 根 manifest 带 dsh 段）**全部未收录**。→ 判定为**站点侧该批次的收录（ingestion）未执行**，非本仓不合规；本仓要求已全部就位，等下一次 ingestion。
 - **催问稿位置**：`.scratch/market/market-submission.md`（**本机专用，不入库**；公开仓库不留流程稿）。
 - **公开口径纪律（维护者 2026-10-27 指示）**：对外 issue 回复一律**简短、客气、专业、客观**——只给结论与入口，细节指向仓库文档（兼容实证见 `docs/compat-contract.md` §22）；内部过程信息（凭据/账户状态、测试抖动过程、本机操作细节）**不外发**。
 
