@@ -857,3 +857,11 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **同步升级的 profile 插件**（宿主 0.2.1 起 engines.dsh 单独硬校验、peer 范围收紧）：dsh-voice-mode 0.7.28→**0.7.31**、dshmarket 1.66.22→1.71.1、dsh-better-sidebar 0.26.1→0.28.1、@deepseek-ai/dsh-client-ui-sidebar-documentpreview 0.2.0-rc.2→0.2.1-rc.2；dsh-opencode-session 保持 0.1.1（无版本约束）。
 - **站点补丁**：`/mnt/work/dsh-site-patch-settings-remote/patch.sh` 需在新版 bundle 上重放；脚本另加一步扫描 patch.sh 未收录的新形态（isLoopback 分支）以免静默失效。
 - **恢复点（会话被中断后按此续）**：① `cat /mnt/work/upgrade-dsh-021rc2.status` 看结果；② `dsh --version` 应为 0.2.1-rc.2；③ `curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3018/voice-mode` 应 200，`/voice-mode/config` 与 `/voice-mode/settings` 也应 200（证明插件未被 engines.dsh 拒载）；④ profile 内 dsh-voice-mode 应为 0.7.31；⑤ 失败则脚本已自动回滚（status=ROLLBACK_OK/FAILED），按日志尾部处理。⑥ 升级后需复核 `docs/compat-contract.md` §22 与 0.2.1-rc.2 的实测结论是否需要补记。
+
+### 追加：宿主 dsh 升级完成 —— 0.2.0-rc.2 → **0.2.1-rc.2**（2026-10-27 17:22 收尾）
+
+- **结果**：dsh **0.2.1-rc.2**（= npm latest）已上线；`dsh.service` active、**NRestarts=0**；`/voice-mode` 200、`/voice-mode/config` 200、`/voice-mode/settings` 200（插件未被 0.2.1 起的 `engines.dsh` 硬校验拒载）；GUI fence 401；journal 无 skip/incompatible/error。
+- **profile 内插件同步升级**（宿主 0.2.1 线，peer 范围收紧所致）：dsh-voice-mode **0.7.28 → 0.7.31**（含 Edge 朗读修复）、dshmarket 1.66.22 → 1.71.1、dsh-better-sidebar 0.26.1 → 0.28.1、@deepseek-ai/dsh-client-ui-sidebar-documentpreview 0.2.0-rc.2 → 0.2.1-rc.2；dsh-opencode-session 保持 0.1.1。
+- **站点补丁**已在 0.2.1-rc.2 的新 bundle 上重放（命中形态三，`dsh-client-ui-settings-general/lib/client.js` 1 处），`patch.sh --check` = applied。**浏览器需刷新一次**才会拿到新 client bundle。
+- **回滚基线**：全局包 tar `/mnt/work/dsh-0.2.0-rc.2-pre-rollback-20261027-142209.tar.gz`；profile tar + settings/cordis/sessions/storages/插件覆盖层 `/home/www/.dsh/backups/pre-0.2.1-rc.2-20261027-142209/`。状态文件 `/mnt/work/upgrade-dsh-021rc2.status` = OK；日志 `/mnt/work/upgrade-dsh-021rc2.log`。
+- **踩坑（工具链，非产品）**：`pnpm add` **安装已完成**（日志有 "Done in 1m 40s"）却**进程不退出**（`ep_poll`、无子进程、3 小时仅 0:08 CPU）→ 升级脚本卡在 STEP 2 之后的 `if ! (...)` 判断点，**站点补丁与重启都没跑到**。处置：先 `systemctl stop` 升级单元（阻断它把「pnpm 非零退出」判成 STEP_FAIL 而触发**回滚**），再清理 pnpm 进程，剩余步骤手工补做。**下次发同类脚本**：包管理器命令要用 `timeout` 包裹并独立判其退出码，或在安装完成后 `kill` 掉挂住的 pnpm 而不是等它退出。
