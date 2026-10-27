@@ -17,7 +17,7 @@
 
 ![dsh-voice-mode 全双工语音对话](assets/hero-banner.png)
 
-> **Full-duplex voice mode for DeepSeek Harness** —— 在会话内用语音完成整轮对话：说话时**边说边出字**、停顿后自动发送；回复**按句朗读**并跟随实时字幕；朗读中**开口即打断**。识别在本地推理、无需 API Key；朗读默认 Edge 云端（快且自然），本地 VITS / Kokoro 可选（隐私优先）。兼容 dsh 0.1.1-rc.2 起全版本（已验证至 0.2.1-rc.3，含官方桌面端等价的 Electron 宿主，完整矩阵见 [docs/compat-contract.md](docs/compat-contract.md) §10–§22）。979 项测试全绿（75 套件）；当前版本见上方 npm 徽章与 [Releases](https://github.com/qishuilalala/dsh-voice-mode/releases)。
+> **Full-duplex voice mode for DeepSeek Harness** —— 在会话内用语音完成整轮对话：说话时**边说边出字**、停顿后自动发送；回复**按句朗读**并跟随实时字幕；朗读中**开口即打断**。识别在本地推理、无需 API Key；朗读默认 Edge 云端（快且自然），本地 VITS / Kokoro 可选（隐私优先）。兼容 dsh 0.1.1-rc.2 起全版本（已验证至 0.2.1-rc.3，含官方桌面端等价的 Electron 宿主，完整矩阵见 [docs/compat-contract.md](docs/compat-contract.md) §10–§22）。979 项测试全绿（74 套件）；当前版本见上方 npm 徽章与 [Releases](https://github.com/qishuilalala/dsh-voice-mode/releases)。
 
 ---
 
@@ -34,6 +34,13 @@
 ---
 
 ## 🆕 最近更新
+
+**v0.7.31 —— 修复 Edge 云端朗读再次失效**（详见 [CHANGELOG](CHANGELOG.md)）
+- 🔊 微软又改了 Edge 朗读的握手（2026-10-25 起），0.7.24 ~ 0.7.30 的默认朗读会整体无声；本版跟进上游修复并重建发布包，**已实测合成成功**。本地 VITS / Kokoro 朗读不受影响
+- 🔐 依赖审计：修复 zod 高危公告（GHSA-mrhx-c7xc-m3w5），该依赖仅用于开发期类型检查、不进发布包
+
+**v0.7.30 —— 兼容 dsh 0.2.1-rc.3**
+- 🧩 覆盖矩阵扩到 18 个宿主版本 / 15 个隔离核心冒烟；兼容声明（中英 README、manifest）同步到 0.2.1-rc.3
 
 **v0.7.29 —— 对抗验证修复批**（详见 [CHANGELOG](CHANGELOG.md)）
 - 🧩 长句还在识别时接着说下一句，前一句不再被吞；朗读中按住打断再上滑取消后，下一句不再丢
@@ -202,7 +209,7 @@ flowchart LR
 | --- | --- |
 | 点麦克风无反应，状态条红字 | 浏览器拒绝麦克风：地址栏（iOS 为 设置 → Safari → 麦克风）开启后重试 |
 | 状态条「正在加载模型… x%」卡住 | 检查网络；模型较大可先 `npm run prefetch`；国内网络 `modelHost` 配 `https://hf-mirror.com` |
-| 朗读无声音 / 无字幕 | 本地引擎首次合成需加载模型；若持续失败看状态条提示（自动退避重试）；确认页面前台且未静音。**默认的 Edge 云端朗读依赖微软在线服务**：若连续多句失败，会提示「云端朗读暂不可用」——到设置里把朗读引擎切到本地 VITS / Kokoro 即可（v0.7.23 及更早版本在 2026-10-15 起因服务端拒绝握手而整体无声，升级到 ≥0.7.24） |
+| 朗读无声音 / 无字幕 | 本地引擎首次合成需加载模型；若持续失败看状态条提示（自动退避重试）；确认页面前台且未静音。**默认的 Edge 云端朗读依赖微软在线服务**：若连续多句失败，会提示「云端朗读暂不可用」——到设置里把朗读引擎切到本地 VITS / Kokoro 即可（微软已两次变更握手：2026-10-15 起 v0.7.23 及更早版本无声 → 修于 0.7.24；2026-10-25 起 v0.7.24 ~ v0.7.30 无声 → 修于 **0.7.31**，请升级到 ≥0.7.31） |
 | 语音模式进不去 | 检查插件 `enabled`；多标签页时确认当前会话为活动会话 |
 | 识别到但不是我要说的 | 环境噪声：降低音量或提高 `interruptLevel`（高门槛） |
 | 打不断（朗读中开口无反应） | 调高 `interruptLevel`（更敏感档）或检查麦克风权限；**不要**调 `echoGateDb`——原生 AEC 生效时它从未被执行（详见 ADR-0006） |
