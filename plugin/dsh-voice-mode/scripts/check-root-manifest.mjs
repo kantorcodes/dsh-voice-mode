@@ -46,6 +46,7 @@ const problems = []
 if (root.name !== plugin.name) problems.push(`name：根=${root.name} 插件=${plugin.name}`)
 if (root.version !== plugin.version) problems.push(`version：根=${root.version} 插件=${plugin.version}`)
 if (root.license !== plugin.license) problems.push(`license：根=${root.license} 插件=${plugin.license}`)
+if (root.description !== plugin.description) problems.push('description：根与插件不一致（对外展示以插件 manifest 为准）')
 if (!root.scripts?.prepublishOnly) problems.push('根 manifest 缺少 prepublishOnly 守卫（防止在根目录误发布）')
 // 根 manifest 还镜像了插件的宿主契约与入口，市场扫描器据此判定「这是一个 DSH 插件」
 // （实测：已收录插件的根 manifest 均带 dsh 段与 main）。镜像字段必须与插件 manifest 一致，否则会漂移。

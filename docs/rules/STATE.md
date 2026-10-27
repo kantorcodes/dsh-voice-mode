@@ -842,3 +842,10 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **前置条件已满足**：npm 包已发布（`dsh-voice-mode` latest 0.7.31，机器人明确「插件中心只展示能用 NPM 一键安装的插件」）；仓库根 manifest 已在远端（`dsh-voice-mode 0.7.31 MIT`，自动扫描识别包名与版本用）；topic `dsh-plugin` 已在。
 - **剩余动作**：等下一轮扫描 → 核对条目页 `/plugins/qishuilalala/dsh-voice-mode` 是否 200 → 登记条目地址与日期到本文件与 `docs/market-submission.md` → 询问用户后给根 README 加市场徽章 → 停掉 10 分钟巡检。
 - **观察**：市场仓库近两天有 8+ 个同类提交（#437~#453），审核前普遍 0 评论、状态 open；机器人在 ~1 小时后批量处理（本次 08:58 提交 → 10:07 处理）。即**审核延迟约 1 小时，上架取决于扫描周期**。
+
+### 追加：插件市场收录（Issue #18）当前状态（2026-10-27 14:05 修订）
+
+- **审核已通过**：`dshplugin/dsh-plugin-hub#452` 于 2026-10-26 18:07 被机器人确认「收录流程全自动运行，下一轮扫描自动进入目录」并关闭；**无需人工操作**。
+- **未上线原因**：站点目录条目数自 2026-10-26 23:30 起停在 27,884 未变（同期其他提交 #441/#442/#448 也均未收录、市场自家条目页最新日期同样停在 10-26）→ **站点扫描未跑**，非本仓不合规。本仓四项硬要求已逐条核实：公开仓库、topic `dsh-plugin`、README 安装命令、导出 `apply(ctx)`、根 manifest（name/version/`dsh.client.inject`/main/`engines.dsh`）、npm 包 `dsh-voice-mode`（latest 0.7.31）。
+- **催问稿位置**：`.scratch/market/market-submission.md`（**本机专用，不入库**；公开仓库不留流程稿）。
+- **公开口径纪律（维护者 2026-10-27 指示）**：对外 issue 回复一律**简短、客气、专业、客观**——只给结论与入口，细节指向仓库文档（兼容实证见 `docs/compat-contract.md` §22）；内部过程信息（凭据/账户状态、测试抖动过程、本机操作细节）**不外发**。
