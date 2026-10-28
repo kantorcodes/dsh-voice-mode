@@ -857,7 +857,7 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **回滚基线**：全局包 tar `/mnt/work/dsh-0.2.0-rc.2-pre-rollback-<STAMP>.tar.gz`；profile tar + settings/cordis/sessions/storages/插件覆盖层在 `/home/www/.dsh/backups/pre-0.2.1-rc.2-<STAMP>/`。
 - **同步升级的 profile 插件**（宿主 0.2.1 起 engines.dsh 单独硬校验、peer 范围收紧）：dsh-voice-mode 0.7.28→**0.7.31**、dshmarket 1.66.22→1.71.1、dsh-better-sidebar 0.26.1→0.28.1、@deepseek-ai/dsh-client-ui-sidebar-documentpreview 0.2.0-rc.2→0.2.1-rc.2；dsh-opencode-session 保持 0.1.1（无版本约束）。
 - **站点补丁**：`/mnt/work/dsh-site-patch-settings-remote/patch.sh` 需在新版 bundle 上重放；脚本另加一步扫描 patch.sh 未收录的新形态（isLoopback 分支）以免静默失效。
-- **恢复点（会话被中断后按此续）**：① `cat /mnt/work/upgrade-dsh-021rc2.status` 看结果；② `dsh --version` 应为 0.2.1-rc.2；③ `curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3018/voice-mode` 应 200，`/voice-mode/config` 与 `/voice-mode/settings` 也应 200（证明插件未被 engines.dsh 拒载）；④ profile 内 dsh-voice-mode 应为 0.7.31；⑤ 失败则脚本已自动回滚（status=ROLLBACK_OK/FAILED），按日志尾部处理。⑥ 升级后需复核 `docs/compat-contract.md` §22 与 0.2.1-rc.2 的实测结论是否需要补记。
+- **恢复点（会话被中断后按此续）**：① `cat /mnt/work/upgrade-dsh-021rc2.status` 看结果；② `dsh --version` 应为 0.2.1-rc.2；③ `curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3018/voice-mode` 应 200，`/voice-mode/config` 与 `/voice-mode/settings` 也应 200（证明插件未被 engines.dsh 拒载）；④ profile 内 dsh-voice-mode 应为 0.7.31；⑤ 失败则脚本已自动回滚（status=ROLLBACK_OK/FAILED），按日志尾部处理。⑥ 升级后需复核兼容契约 §22 与 0.2.1-rc.2 的实测结论是否需要补记。
 
 ### 追加：宿主 dsh 升级完成 —— 0.2.0-rc.2 → **0.2.1-rc.2**（2026-10-27 17:22 收尾）
 
