@@ -866,3 +866,11 @@ plugin/dsh-voice-mode/package.json（engines + description）、plugin/dsh-voice
 - **站点补丁**已在 0.2.1-rc.2 的新 bundle 上重放（命中形态三，`dsh-client-ui-settings-general/lib/client.js` 1 处），`patch.sh --check` = applied。**浏览器需刷新一次**才会拿到新 client bundle。
 - **回滚基线**：全局包 tar `/mnt/work/dsh-0.2.0-rc.2-pre-rollback-20261027-142209.tar.gz`；profile tar + settings/cordis/sessions/storages/插件覆盖层 `/home/www/.dsh/backups/pre-0.2.1-rc.2-20261027-142209/`。状态文件 `/mnt/work/upgrade-dsh-021rc2.status` = OK；日志 `/mnt/work/upgrade-dsh-021rc2.log`。
 - **踩坑（工具链，非产品）**：`pnpm add` **安装已完成**（日志有 "Done in 1m 40s"）却**进程不退出**（`ep_poll`、无子进程、3 小时仅 0:08 CPU）→ 升级脚本卡在 STEP 2 之后的 `if ! (...)` 判断点，**站点补丁与重启都没跑到**。处置：先 `systemctl stop` 升级单元（阻断它把「pnpm 非零退出」判成 STEP_FAIL 而触发**回滚**），再清理 pnpm 进程，剩余步骤手工补做。**下次发同类脚本**：包管理器命令要用 `timeout` 包裹并独立判其退出码，或在安装完成后 `kill` 掉挂住的 pnpm 而不是等它退出。
+
+### 追加：上游新版本 0.2.1-rc.4 / 0.2.2-alpha.2 复验 + 矩阵扩到 20 版/17 核心（2026-10-28）
+
+- **发现**：本机宿主升到 0.2.1-rc.2（latest）后复查 dist-tags，发现 `next=0.2.1-rc.4`（10-26 15:28Z）与 `alpha=0.2.2-alpha.2`（10-27 19:10Z）未覆盖——不等周度巡检自动开 issue，先复验。
+- **结果**：两版 L1 锚点 9/9、L2 双 typecheck 通过、L3 runtime 冒烟 16/16 全绿（探针无需再改，rc.3 引入的「Account menu 只剩 aria-label」在新版本上保持一致）；L4 真 LLM 仍因本机账户余额不足（HTTP 402）未完成，与版本无关。
+- **变更**：`verify-dual.sh` 18→20 版锚点/typecheck、15→17 核心冒烟（rc.4 端口 3150、0.2.2-alpha.2 端口 3151）；`typecheck-dual.sh` cordis 映射补 `0.2.2-* → 4.0.6-alpha.1`、`0.2.1-rc.4` 并入 4.0.5 行；CI 类型矩阵加 0.2.1-rc.4；对外声明同步到 0.2.2-alpha.2（中英 README、两个 manifest）；compat-contract 新增 §23。
+- **另一件**：修掉了**CI 连红 4 次**的根因——昨晚追加 STATE 段落时引入了裸路径引用（`docs/compat-contract.md`），文档锚点守卫「无法判定」121→122 超出基线；改写措辞而非放宽基线（`2b3f833`）。
+- **issue #20**（awesome-ai-plugins 维护方邀请我们进他们的清单）：已 fork 上游仓并在 `qishuilalala/awesome-ai-plugins:add/dsh-voice-mode` 提交单行 README 改动（DSH 插件段、按字母序、不加 standalone 标记）；本机 PAT 无权在上游仓建 PR，已在 issue 里给出 compare 预填链接待用户一键提交。

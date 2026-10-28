@@ -731,3 +731,21 @@ class AgentDefaultModelConfig extends Service {
 - **L4 真 LLM 端到端本轮无法完成——环境/凭据侧原因，与版本无关**：rc.3 上跑 `full-e2e.sh` 得「RPC 三步全 ok、accepted:true，但 SSE 音频帧 0、回复正文为空」；**rc.2 对照组用同一脚本、同一凭据得到完全相同的结果**（排除版本回归）。根因直查到位：隔离 profile 使用的 `DEEPSEEK_API_KEY`（取自 `/root/.env`）直连 `api.deepseek.com` 返回 **HTTP 402 `Insufficient Balance`**（2026-10-26 实测，密钥值不落盘/不进文档）→ **L4 仍为未覆盖层**，待密钥恢复后补跑 rc.3。
 - **L4 真实语音闭环（`DSHVM_VOICE_LOOP=1`）未跑**：需本机已缓存 VITS/zipformer 模型（实测本机无模型缓存，缺失时会触发数百 MB 下载）。
 - **桌面端 Electron 冒烟（真 Electron + Xvfb / Windows 宿主）未跑**：本服务器无桌面环境，沿用历史先例登记到 `docs/qa/must-verify-manually.md`，交用户侧补跑（0.2.1-rc.3 核心）。
+
+## 23. 0.2.1-rc.4 / 0.2.2-alpha.2 复核（2026-10-28，CI 巡检后主动扩展矩阵）
+
+- **发现途径**：本机宿主升级到 `0.2.1-rc.2`（npm latest）后复查上游 dist-tags，发现 **`next=0.2.1-rc.4`**（2026-10-26 15:28Z 发布）与 **`alpha=0.2.2-alpha.2`**（2026-10-27 19:10Z）两个未覆盖版本（`latest` 仍为 0.2.1-rc.2）。周度 CI 巡检（`dsh upstream version check`）下一次触发才会自动开 issue——本次不等它，按四步流程先复验。
+- **依赖面**（`npm view` 实证）：`0.2.1-rc.4` 的宿主类型包对等依赖仍是 `cordis ~4.0.5`（与 rc.2/rc.3 同档）；`0.2.2-alpha.2` 升到 **`cordis ~4.0.6-alpha.1`**（0.2.2 线首次使用 4.0.6 alpha 档）→ `typecheck-dual.sh` 的 cordis 映射表新增 `0.2.2-* → 4.0.6-alpha.1`，`0.2.1-rc.4` 并入既有的 `4.0.5` 行。
+- **四层验证结果**：
+
+| 层 | 0.2.1-rc.4 | 0.2.2-alpha.2 |
+|---|---|---|
+| L1 锚点（9 个 client.inject 包） | ✅ 9/9 | ✅ 9/9 |
+| L2 双 typecheck（host + client） | ✅（cordis 4.0.5） | ✅（cordis 4.0.6-alpha.1） |
+| L3 runtime 冒烟（host 三端点 + mic 双语 + 右键菜单 + console 0 error + 设置卡片 16 断言） | ✅ 16/16 | ✅ 16/16 |
+| L4 真 LLM 闭环 | ❌ 环境性（见下） | ❌ 环境性（见下） |
+
+- **L4 未完成的根因（与版本无关，环境/凭据侧）**：本机 `DEEPSEEK_API_KEY` 账户余额不足，直连 `api.deepseek.com` 返回 **HTTP 402 `Insufficient Balance`**（密钥值不落盘）→ 真 LLM 闭环待凭据恢复后补跑两个版本。
+- **宿主行为变化**：两版均**未出现**新的客户端锚点或设置面变化；本插件两处设置入口（插件详情页卡片 / Account menu → Settings → Voice Mode 专属页）实测均可用，rc.3 引入的「Account menu 只剩 aria-label」在新版本上保持一致（探针已按 aria-label 查找，无需再改）。
+- **矩阵扩展**：`verify-dual.sh` 锚点/typecheck **18 → 20 版**、隔离核心冒烟 **15 → 17**（新增 0.2.1-rc.4 端口 3150、0.2.2-alpha.2 端口 3151）；CI 的 typecheck 矩阵加 `0.2.1-rc.4`（alpha 线留在本地矩阵，不占 CI 时长）；`check-dsh-version.sh --check` 恢复 **exit 0**（所有上游 dist-tag 均在矩阵内）。
+- **兼容声明**：`engines.dsh` 维持 `">=0.1.1-rc.2 <0.3.0-0"` 不变——0.2.1-rc.4 与 0.2.2-alpha.2 均落在该范围内（0.2.2 仍 < 0.3.0）；对外声明的「已验证至」更新为 **0.2.2-alpha.2**（稳定通道仍是 0.2.1-rc.2）。

@@ -5,6 +5,15 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.32] - 2026-10-28
+
+### 兼容 dsh 0.2.1-rc.4 / 0.2.2-alpha.2
+
+- **覆盖矩阵扩到 20 个宿主版本 / 17 个隔离核心冒烟**（新增上游 `next=0.2.1-rc.4` 与 `alpha=0.2.2-alpha.2`）。两个新版本均四层验证：客户端锚点 **9/9**、host/client 双 typecheck **通过**、runtime 冒烟 **16/16**（host 三端点、mic 中英渲染、右键菜单、console 0 error、设置卡片 16 项断言）。实证见 `docs/compat-contract.md` §23。
+- **兼容声明同步到 0.2.2-alpha.2**（中英 README、manifest）。`engines.dsh` 维持 `">=0.1.1-rc.2 <0.3.0-0"` 不变——两个新版本都落在该范围内，未验证的新大版本仍会被干净拒绝。
+- 0.2.2 线的 cordis 对等依赖升到 `~4.0.6-alpha.1`，类型检查映射表已补；CI 类型矩阵加 `0.2.1-rc.4`。
+- 真 LLM 闭环本轮未完成：本机 DeepSeek 账户余额不足（HTTP 402），与版本无关，待凭据恢复后补跑。
+
 ## [0.7.31] - 2026-10-26
 
 ### 修复：默认朗读引擎（Edge 云端）再次失效 —— 微软服务端又改了握手
